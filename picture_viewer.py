@@ -76,6 +76,7 @@ class ImageOpener():
 
     def open_image(self):
 
+
         # load in blank space
         best_button=Button(35,'Black','',self.centre_w,self.centre_h-390,100,38,self.background,self.screen)
         best_button.draw_box(23,7)
@@ -131,6 +132,10 @@ class ImageOpener():
         # load in the name display box
         name_box=Button(32,'Black',image_,self.centre_w+50,self.centre_h-450,300,40,'Light Grey',self.screen)
         name_box.draw_box(23,9)
+
+        # wipe the old image
+        wipe_box=Button(32,'Black','',self.centre_w,image_area_centre_h,10000,850,self.background,self.screen)
+        wipe_box.draw_box(23,9)
 
         # load the image in
         self.screen.blit(image,(self.centre_w-half_image_w,image_area_centre_h-half_image_h))

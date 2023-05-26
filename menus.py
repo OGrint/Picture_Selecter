@@ -8,7 +8,7 @@ import shutil
 
 from buttons_and_more import Button
 from file_summary import image_stats
-from NEF_JPEG_converter import convert_nef_to_jpeg
+from NEF_JPEG_converter import Processor
 from picture_viewer import ImageOpener
 from buttons_and_more import prompt_file
 from buttons_and_more import wipe_screen
@@ -170,13 +170,11 @@ def screen_2(screen,f,background,centre_w,centre_h):
                     loading_button.draw_box(40,13)
                     loading_button=Button(32,'Black','',centre_w-120,centre_h+50,243,30,background,screen)
                     loading_button.draw_box(40,13)
-                    loading_button=Button(32,'Black','Do not turn off app',centre_w,centre_h+100,300,50,background,screen)
-                    loading_button.draw_box(40,13)
     
                     pygame.display.update()
 
                     # convert nefs to jpegs
-                    convert_nef_to_jpeg(f,nef_not_jpeg)
+                    Processor(f,centre_w,centre_h,screen,background,nef_not_jpeg)
 
                     # load in the new colored next button
                     next_button_2=Button(70,'Black','Next',centre_w+450,centre_h+300,220,70,'Light Blue',screen)
