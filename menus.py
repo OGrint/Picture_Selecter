@@ -163,16 +163,6 @@ def screen_2(screen,f,background,centre_w,centre_h):
                 # convert button converts nefs without jpgs to jpgs
                 if convert_button.area.collidepoint(event.pos):
                     
-                    # load in a loading message
-                    loading_button=Button(32,'Black','Loading... Please Wait',centre_w,centre_h,300,50,background,screen)
-                    loading_button.draw_box(30,13)
-                    loading_button=Button(32,'Black','',centre_w,centre_h+50,500,40,'Black',screen)
-                    loading_button.draw_box(40,13)
-                    loading_button=Button(32,'Black','',centre_w-120,centre_h+50,243,30,background,screen)
-                    loading_button.draw_box(40,13)
-    
-                    pygame.display.update()
-
                     # convert nefs to jpegs
                     Processor(f,centre_w,centre_h,screen,background,nef_not_jpeg)
 
@@ -181,13 +171,15 @@ def screen_2(screen,f,background,centre_w,centre_h):
                     next_button_2.draw_box(55,12)
 
                     # blank out loading screen
-                    loading_button=Button(32,'Black','',centre_w,centre_h+50,500,40,background,screen)
+                    loading_button=Button(32,'Black','',centre_w,centre_h+50,510,45,background,screen)
                     loading_button.draw_box(40,13)
                     loading_button=Button(32,'Black','',centre_w,centre_h,300,50,background,screen)
                     loading_button.draw_box(30,13)
                     loading_button=Button(32,'Black','',centre_w,centre_h+100,300,50,background,screen)
                     loading_button.draw_box(30,13)
                     
+                    time.sleep(1)
+
                     # load in a processing complete message
                     loading_button=Button(70,'Black','Processing Complete',centre_w,centre_h,470,50,background,screen)
                     loading_button.draw_box(0,13)

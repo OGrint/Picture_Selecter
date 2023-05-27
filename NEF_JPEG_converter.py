@@ -34,14 +34,24 @@ class Processor():
                 # load in a loading message
             loading_button=Button(32,'Black','Loading... Please Wait',self.centre_w,self.centre_h,300,50,self.background,self.screen)
             loading_button.draw_box(30,13)
-            loading_button=Button(32,'Black','',self.centre_w,self.centre_h+50,500,40,'Black',self.screen)
+
+            # Draw the black background box of the loading bar
+            loading_button=Button(32,'Black','',self.centre_w,self.centre_h+50,510,45,'Black',self.screen)
             loading_button.draw_box(40,13)
-            loading_button=Button(32,'Black','',self.centre_w-120,self.centre_h+50,243,30,self.background,self.screen)
-            loading_button.draw_box(40,13)
+
+            # Load in a bar to show progress. First find percentage through work the loading is
+            max=len(nef_no_jpeg_list)
+            proportion = (n/max)*100
+            number_through=int(proportion/7.1429)
+            
+            # Load in as many a srequired loading squares
+            for x in range (0,number_through):
+                width_point=(self.centre_w-227.5)+(x*35)
+                loading_button=Button(32,'Black','',width_point,self.centre_h+50,30,30,self.background,self.screen)
+                loading_button.draw_box(40,13)
+
+            # State how many pictures are processed
             loading_button=Button(32,'Black',f'{n} out of {len(nef_no_jpeg_list)} processed',self.centre_w,self.centre_h+100,300,50,self.background,self.screen)
             loading_button.draw_box(40,13)
 
             pygame.display.update()
-
-    
-        
