@@ -45,7 +45,7 @@ def screen_1(screen,f,background,centre_w,centre_h):
     file_header.draw_box(28,9)
         
     # load in the next button
-    next_button_1=Button(70,'Black','Next',centre_w+450,centre_h+300,220,70,next_button_color,screen)
+    next_button_1=Button(70,'Black','Next',centre_w+450,centre_h+270,220,70,next_button_color,screen)
     next_button_1.draw_box(55,12)
 
     # run the page
@@ -67,7 +67,7 @@ def screen_1(screen,f,background,centre_w,centre_h):
                     # check if new location is valid
                     if os.path.exists(f):
                          # if it is valid log this and make next button blue for clickable
-                        next_button_1=Button(70,'Black','Next',centre_w+450,centre_h+300,220,70,'Light Blue',screen)
+                        next_button_1=Button(70,'Black','Next',centre_w+450,centre_h+270,220,70,'Light Blue',screen)
                         next_button_1.draw_box(55,12)
                         valid_file=True
 
@@ -135,11 +135,11 @@ def screen_2(screen,f,background,centre_w,centre_h):
     convert_button.draw_box(30,13)
 
     # load in the next button
-    next_button_2=Button(70,'Black','Next',centre_w+450,centre_h+300,220,70,next_color,screen)
+    next_button_2=Button(70,'Black','Next',centre_w+450,centre_h+270,220,70,next_color,screen)
     next_button_2.draw_box(55,12)
 
      # load in the previous button
-    prev_button_2=Button(70,'Black','Previous',centre_w-450,centre_h+300,220,70,'Light Blue',screen)
+    prev_button_2=Button(70,'Black','Previous',centre_w-450,centre_h+270,220,70,'Light Blue',screen)
     prev_button_2.draw_box(5,12)
 
     # run the menu
@@ -167,7 +167,7 @@ def screen_2(screen,f,background,centre_w,centre_h):
                     Processor(f,centre_w,centre_h,screen,background,nef_not_jpeg)
 
                     # load in the new colored next button
-                    next_button_2=Button(70,'Black','Next',centre_w+450,centre_h+300,220,70,'Light Blue',screen)
+                    next_button_2=Button(70,'Black','Next',centre_w+450,centre_h+270,220,70,'Light Blue',screen)
                     next_button_2.draw_box(55,12)
 
                     # blank out loading screen
@@ -197,49 +197,49 @@ def screen_2(screen,f,background,centre_w,centre_h):
 
 
 # screen 3 will cycle through images, you can move them into a 'Best' folder or delete them from it
-def screen_3(screen,f,jpeg_details,nef_details,jpeg_not_nef,background,centre_w,centre_h):
+def screen_3(screen,f,jpeg_details,nef_details,jpeg_not_nef,background,centre_w,centre_h,width,height):
     
     # blank out the screen
     screen.fill('White')
 
     # load in the image name header box
-    name_header=Button(32,'Black','Name',centre_w-150,centre_h-450,120,40,'Dark Grey',screen)
+    name_header=Button(32,'Black','Name',centre_w-150,centre_h-(height/2-18),120,40,'Dark Grey',screen)
     name_header.draw_box(23,9)
 
     # load in the name display box
-    name_box=Button(32,'Black','',centre_w+50,centre_h-450,300,40,'Light Grey',screen)
+    name_box=Button(32,'Black','',centre_w+50,centre_h-(height/2-18),300,40,'Light Grey',screen)
     name_box.draw_box(23,9)
 
      # load in the previous button
-    prev_button_3=Button(70,'Black','Previous',centre_w-700,centre_h-450,220,70,'Light Blue',screen)
+    prev_button_3=Button(70,'Black','Previous',centre_w-500,centre_h-(height/2-40),220,70,'Light Blue',screen)
     prev_button_3.draw_box(5,12)
 
     # load in the finish button
-    finish_button_3=Button(70,'Black','Finish',centre_w+700,centre_h-450,220,70,'Light Blue',screen)
+    finish_button_3=Button(70,'Black','Finish',centre_w+500,centre_h-(height/2-40),220,70,'Light Blue',screen)
     finish_button_3.draw_box(35,12)
 
     # load in the back button to move between images
-    back_button=Button(50,'White','<',centre_w-213,centre_h-390,75,38,'Dark Blue',screen)
+    back_button=Button(50,'White','<',centre_w-213,centre_h-(height/2-63),75,38,'Dark Blue',screen)
     back_button.draw_box(25,0)
 
     # load in the forward button to move between images
-    forward_button=Button(50,'White','>',centre_w+213,centre_h-390,75,38,'Dark Blue',screen)
+    forward_button=Button(50,'White','>',centre_w+213,centre_h-(height/2-63),75,38,'Dark Blue',screen)
     forward_button.draw_box(25,0)
 
     # load in the pick button 
-    pick_button=Button(35,'White','Pick',centre_w+113,centre_h-390,100,38,'Dark Blue',screen)
+    pick_button=Button(35,'White','Pick',centre_w+113,centre_h-(height/2-63),100,38,'Dark Blue',screen)
     pick_button.draw_box(25,7)
 
     # load in a delete button
-    del_button=Button(35,'White','Delete',centre_w-113,centre_h-390,100,38,'Dark Blue',screen)
+    del_button=Button(35,'White','Delete',centre_w-113,centre_h-(height/2-63),100,38,'Dark Blue',screen)
     del_button.draw_box(14,7)
 
     # load in an indicator for if the image is in the best folder
-    best_button=Button(35,'Black','Best',centre_w,centre_h-390,100,38,'Light Grey',screen)
+    best_button=Button(35,'Black','Best',centre_w,centre_h-(height/2-63),100,38,'Light Grey',screen)
     best_button.draw_box(23,7)
 
     # load in the image opener
-    ImageUI=ImageOpener(f,jpeg_details,nef_details,jpeg_not_nef,centre_w,centre_h,screen,background)
+    ImageUI=ImageOpener(f,jpeg_details,nef_details,jpeg_not_nef,centre_w,centre_h,screen,background,width,height)
 
     # run the page
     while True:

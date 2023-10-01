@@ -1,6 +1,5 @@
 import os
 from screeninfo import get_monitors
-from PIL import Image
 import pygame
 import sys
 
@@ -48,7 +47,7 @@ while True:
         # extract outputs from 2 - including summary lists of files and locations
         jpeg_details,nef_details,jpeg_not_nef,screen_no=screen_2(screen,f,background,centre_w,centre_h)
     if screen_no==3:
-        screen_no=screen_3(screen,f,jpeg_details,nef_details,jpeg_not_nef,background,centre_w,centre_h)
+        screen_no=screen_3(screen,f,jpeg_details,nef_details,jpeg_not_nef,background,centre_w,centre_h,width,height)
     
 
 
