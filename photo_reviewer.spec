@@ -13,11 +13,25 @@ import customtkinter
 ctk_path = Path(customtkinter.__file__).parent
 ctk_data = [(str(ctk_path), "customtkinter")]
 
+# AI runtimes: onnxruntime (CPU) and, optionally, OpenVINO (graphics chip) +
+# onnx (makes the graphics-chip copy of the int8 models). OpenVINO loads its
+# device plugins at run time, so collect its DLLs and data explicitly.
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
+ai_binaries, ai_datas, ai_hidden = [], [], []
+for pkg in ("onnxruntime", "openvino", "onnx"):
+    try:
+        ai_binaries += collect_dynamic_libs(pkg)
+        ai_datas += collect_data_files(pkg)
+        ai_hidden += collect_submodules(
+            pkg, filter=lambda n: ".tools" not in n and ".test" not in n)
+    except Exception:
+        pass      # not installed: the app runs without it
+
 a = Analysis(
     ["photo_reviewer.py"],
     pathex=["."],
-    binaries=[],
-    datas=ctk_data,
+    binaries=ai_binaries,
+    datas=ctk_data + ai_datas,
     hiddenimports=[
         # PIL submodules not always auto-detected
         "PIL._tkinter_finder",
@@ -60,7 +74,7 @@ a = Analysis(
         "urllib.request",
         "urllib.parse",
         "urllib.error",
-    ],
+    ] + ai_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -77,6 +91,10 @@ a = Analysis(
         "PySide2",
         "PySide6",
         "wx",
+        "openvino.tools",        # model-conversion tools, not needed at run time
+        "openvino_telemetry",
+        "torch",
+        "tensorflow",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

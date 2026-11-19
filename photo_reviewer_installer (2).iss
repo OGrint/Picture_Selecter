@@ -43,7 +43,6 @@ Name: "startupicon";  Description: "Launch Photo Reviewer at &startup"; GroupDes
 
 [Files]
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "photo_reviewer_countries.geojson"; DestDir: "{app}"; Flags: ignoreversion
 Source: "photo_reviewer_icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

@@ -30,7 +30,9 @@ if %errorlevel% neq 0 (
 echo  Python: & python --version
 echo.
 echo  [1/4] Installing packages...
-pip install pyinstaller customtkinter pillow rawpy imagehash send2trash numpy --quiet
+pip install pyinstaller customtkinter pillow rawpy imagehash send2trash numpy onnxruntime --quiet
+rem Optional: graphics-chip acceleration (Intel graphics via OpenVINO)
+pip install openvino onnx --quiet
 echo  Done.
 echo.
 
@@ -39,10 +41,6 @@ if not exist "photo_reviewer_icon.ico" (
     echo.
 )
 
-if not exist "photo_reviewer_countries.geojson" (
-    echo  NOTE: photo_reviewer_countries.geojson not found - location map disabled.
-    echo.
-)
 
 echo  [2/4] Building application (3-5 minutes)...
 echo.
@@ -60,14 +58,17 @@ if %errorlevel% neq 0 (
 echo.
 echo  [3/4] Copying support files...
 
-if exist "photo_reviewer_countries.geojson" (
-    copy /Y "photo_reviewer_countries.geojson" "dist\PhotoReviewer\" >nul
-    echo  Copied: photo_reviewer_countries.geojson
-)
 
 if exist "photo_reviewer_icon.ico" (
     copy /Y "photo_reviewer_icon.ico" "dist\PhotoReviewer\" >nul
     echo  Copied: photo_reviewer_icon.ico
+)
+
+if exist "models" (
+    xcopy /E /I /Y /Q "models" "dist\PhotoReviewer\models" >nul
+    echo  Copied: models folder - animal detection
+) else (
+    echo  NOTE: models folder not found - animal detection will be unavailable.
 )
 
 echo.
