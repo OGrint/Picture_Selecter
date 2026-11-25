@@ -117,7 +117,7 @@ class SpeciesListTests(unittest.TestCase):
     def _files(self):
         return sorted(os.path.relpath(os.path.join(d, f), self.dest)
                       for d, _s, fs in os.walk(self.dest) for f in fs
-                      if os.path.splitext(f)[1] in (".JPG", ".NEF") and sl.HOLD not in d)
+                      if os.path.splitext(f)[1].lower() in (".jpg", ".nef") and sl.HOLD not in d)
 
     def test_review_pick_another_species_moves_the_copy_and_is_remembered(self):
         entries, clarify, ed = self._copied()
@@ -344,6 +344,122 @@ class SpeciesListTests(unittest.TestCase):
         self.assertEqual(have["KE|Panthera leo"], lion.dest)
         self.assertEqual(have["ES|Lynx pardinus"], os.path.relpath(earlier, self.dest))
 
+    def test_review_then_resolve(self):
+        # as Review does it: decisions only recorded; the files changed when you resolve
+        entries, clarify, _ed = self._copied()
+        ed = sl.ListEditor(entries, clarify, self.dest, trash=os.remove, deferred=True, background_save=True)
+        before = self._files()
+        s = clarify[0].sighting
+        ed.assign_photo(s, "Chiffchaff", "Phylloscopus collybita", "birds")
+        lion = [e for e in entries if e.species == "Lion"][0]
+        ed.reject_photo(lion.pick, "not wild (zoo, farm, pet)")
+        ed.flush()
+        self.assertEqual(self._files(), before)                       # nothing moved yet
+        self.assertIn(sl._key(s.pick.path), sl.load_list(self.dest)["decisions"])   # (but remembered)
+        got = ed.summary()
+        self.assertEqual((got["named"], got["removed"], got["new_species"]), (1, 1, 1))
+        self.assertEqual(got["reasons"], {"not wild (zoo, farm, pet)": 1})
+        self.assertEqual((got["moves"], got["drops"], got["pending"]), (1, 1, True))
+        out = ed.apply()
+        self.assertEqual((out["moved"], out["held"], out["errors"]), (1, 1, []))
+        files = self._files()
+        self.assertIn(os.path.join("Spain", "Birds", "Chiffchaff (Phylloscopus collybita)_2019-03-15.JPG"), files)
+        self.assertFalse(any("Lion" in f for f in files))
+        self.assertFalse(ed.summary()["pending"])
+        ed.close()
+        self.assertFalse(os.path.exists(os.path.join(self.dest, sl.HOLD)))
+        with open(os.path.join(self.dest, "All species.csv"), encoding="utf-8-sig") as f:
+            self.assertIn("Chiffchaff", f.read())
+
+    def test_review_saves_in_the_background(self):
+        entries, clarify, _ed = self._copied()
+        ed = sl.ListEditor(entries, clarify, self.dest, trash=os.remove, background_save=True)
+        s = clarify[0].sighting
+        ed.assign_photo(s, "Chiffchaff", "Phylloscopus collybita", "birds")
+        ed.reject_photo(s, "duplicate")
+        ed.flush()                                                   # (Review waits for it on closing)
+        data = sl.load_list(self.dest)
+        self.assertEqual(data["decisions"][sl._key(s.pick.path)], {"skip": True, "note": "duplicate"})
+        with open(os.path.join(self.dest, "All species.csv"), encoding="utf-8-sig") as f:
+            self.assertNotIn("Chiffchaff", f.read())                 # (the latest decision was written)
+        self.assertEqual(ed.undo(), "Undone")
+        ed.close()
+        self.assertEqual(ed.locate(s)[1].species, "Chiffchaff")
+        with open(os.path.join(self.dest, "All species.csv"), encoding="utf-8-sig") as f:
+            self.assertIn("Chiffchaff", f.read())
+
+    def test_change_your_mind_about_any_photo(self):
+        entries, clarify, ed = self._copied()
+        s = clarify[0].sighting                                        # the uncertain warbler
+        names = lambda: sorted(e.species for e in entries)            # noqa: E731
+        # Chiffchaff… no, a Willow Warbler after all
+        ed.assign_photo(s, "Chiffchaff", "Phylloscopus collybita", "birds")
+        ed.assign_photo(s, "Willow Warbler", "Phylloscopus trochilus", "birds")
+        self.assertNotIn("Chiffchaff", names())
+        self.assertIn(os.path.join("Spain", "Birds", "Willow Warbler (Phylloscopus trochilus)_2019-03-15.JPG"),
+                      self._files())
+        self.assertEqual(ed.locate(s)[0], "entry")
+        # a Hoopoe (already in the list: merged, its copy removed)… no, a Chiffchaff
+        ed.assign_photo(s, "Hoopoe", "Upupa epops", "birds")
+        hoopoe = [e for e in entries if e.species == "Hoopoe" and e.iso == "ES"][0]
+        self.assertEqual(len(hoopoe.sightings), 2)
+        ed.assign_photo(s, "Chiffchaff", "Phylloscopus collybita", "birds")
+        self.assertEqual(len(hoopoe.sightings), 1)                     # taken back out
+        self.assertIsNot(hoopoe.pick, s)
+        chiff = [e for e in entries if e.species == "Chiffchaff"][0]
+        self.assertTrue(chiff.kept)                                    # (its copy, held, came back)
+        # removed… then brought back: its copy comes back too
+        ed.assign_photo(s, "Willow Warbler", "Phylloscopus trochilus", "birds")
+        ww = os.path.join("Spain", "Birds", "Willow Warbler (Phylloscopus trochilus)_2019-03-15.JPG")
+        ed.reject_photo(s)
+        self.assertEqual(ed.locate(s), ("removed", None))
+        self.assertNotIn(ww, self._files())
+        ed.assign_photo(s, "Willow Warbler", "Phylloscopus trochilus", "birds")
+        self.assertEqual(ed.locate(s)[0], "entry")
+        self.assertEqual(sl.load_list(self.dest)["decisions"][sl._key(s.pick.path)]["name"], "Willow Warbler")
+
+    def test_a_sighting_wrongly_grouped_in_a_species_can_be_moved_out(self):
+        later = photo(os.path.join(self.root, "2019", "Spain", "Day 3", "DSC_0700.JPG"), "2019:03:16 09:00:00")
+        self.results["DSC_0700.JPG"] = result("Iberian Lynx", 0.92, box=(0.1, 0.1, 0.2, 0.2))   # (really a fox)
+        self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
+        _p, _pl, res = self._run()
+        entries, clarify = sl.build(res["sightings"])
+        sl.copy_list(entries, clarify, self.dest)
+        ed = sl.ListEditor(entries, clarify, self.dest, trash=os.remove, sightings=res["sightings"], deferred=True)
+        lynx = [e for e in entries if e.species == "Iberian Lynx"][0]
+        wrong = next(s for s in lynx.sightings if s.pick.path == later)
+        self.assertIsNot(lynx.pick, wrong)                    # (not the list's photo: easy to miss)
+        ed.assign_photo(wrong, "Red Fox", "Vulpes vulpes", "mammals")
+        self.assertEqual(len(lynx.sightings), 1)              # (the lynx keeps its own)
+        self.assertIsNot(lynx.pick, wrong)
+        fox = [e for e in entries if e.species == "Red Fox"][0]
+        self.assertEqual((fox.iso, fox.pick), ("ES", wrong))  # (its real species, added)
+        self.assertEqual(ed.summary()["moves"], 0)            # (the lynx's copy stays as it is)
+
+    def test_taking_a_species_photo_out_keeps_the_species(self):
+        later = photo(os.path.join(self.root, "2019", "Spain", "Day 3", "DSC_0700.JPG"), "2019:03:16 09:00:00")
+        self.results["DSC_0700.JPG"] = result("Iberian Lynx", 0.92, box=(0.1, 0.1, 0.2, 0.2))
+        self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
+        _p, _pl, res = self._run()
+        entries, clarify = sl.build(res["sightings"])
+        sl.copy_list(entries, clarify, self.dest)
+        ed = sl.ListEditor(entries, clarify, self.dest, trash=os.remove, sightings=res["sightings"])
+        lynx = [e for e in entries if e.species == "Iberian Lynx"][0]
+        first = lynx.pick
+        ed.assign_photo(first, "Lion", "Panthera leo", "mammals")      # (that one wasn't a lynx)
+        self.assertEqual([x.pick.path for x in lynx.sightings], [later])
+        self.assertEqual(lynx.pick.pick.path, later)
+        files = self._files()
+        self.assertIn(os.path.join("Spain", "Mammals", "Iberian Lynx (Lynx pardinus)_2019-03-16.JPG"), files)
+        self.assertIn(os.path.join("Spain", "Mammals", "Lion (Panthera leo)_2019-03-14.JPG"), files)
+        before = [f for f in files if "Lion (Panthera leo)_2019-03-14" not in f and "_2019-03-16" not in f]
+        before.append(os.path.join("Spain", "Mammals", "Iberian Lynx (Lynx pardinus)_2019-03-14.JPG"))
+        self.assertEqual(ed.undo(), "Undone")
+        self.assertEqual(self._files(), sorted(before))
+        lynx = [e for e in entries if e.species == "Iberian Lynx"][0]
+        self.assertEqual(lynx.pick.pick.path, first.pick.path)
+        self.assertFalse(any(e.species == "Lion" and e.iso == "ES" for e in entries))
+
     def test_raw_photos_become_jpegs(self):
         import reviewer_imaging
         self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
@@ -395,16 +511,253 @@ class SpeciesListTests(unittest.TestCase):
             self.assertEqual(popen.call_args[0][0][:2], ["explorer", "/select,"])
             self.assertFalse(sl.show_in_folder(os.path.join(self.root, "gone.NEF")))
 
-    def test_raw_copies_already_in_a_list_stay(self):
+    def test_raw_copies_already_in_a_list_become_jpegs(self):
+        import reviewer_imaging
         self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
         _p, _pl, res = self._run()
         entries, clarify = sl.build(res["sightings"])
         sl.copy_list(entries, clarify, self.dest)                       # (made before: RAW copies)
-        before = self._files()
+        nef = [f for f in self._files() if f.endswith(".NEF")]
+        self.assertEqual(len(nef), 1)
         _p, _pl, res = self._run()
         entries, clarify = sl.build(res["sightings"])
-        self.assertEqual(sl.copy_list(entries, clarify, self.dest, jpeg=True)["copied"], 0)
-        self.assertEqual(self._files(), before)
+        big = Image.new("RGB", (3000, 2000), (200, 120, 40))
+        with mock.patch.object(reviewer_imaging, "load_preview", return_value=big):
+            out = sl.copy_list(entries, clarify, self.dest, jpeg=True)
+        self.assertEqual((out["copied"], out["converted"], out["errors"]), (0, 1, []))
+        files = self._files()
+        self.assertFalse(any(f.endswith(".NEF") for f in files))
+        jpg = nef[0][:-4] + ".jpg"
+        self.assertIn(jpg, files)
+        self.assertEqual(sl.load_list(self.dest)["species"]["ES|Upupa epops"], jpg)
+
+    def test_many_decisions_at_once(self):
+        entries, clarify, _ed = self._copied()
+        ed = sl.ListEditor(entries, clarify, self.dest, trash=os.remove, deferred=True)
+        photos = [e.pick for e in entries] + [c.sighting for c in clarify]
+        with ed.batch():
+            for s in photos:
+                ed.reject_photo(s, "duplicate")
+        self.assertEqual((len(ed.entries), len(ed.clarify)), (0, 0))
+        self.assertEqual(ed.summary()["reasons"], {"duplicate": len(photos)})
+        self.assertEqual(len(ed._undo), 1)                              # one undo for the lot
+        self.assertEqual(ed.undo(), "Undone")
+        self.assertEqual((len(ed.entries), len(ed.clarify)), (len(entries) if entries else 4, 1))
+        self.assertEqual(ed.decided_count(), 0)
+
+    def test_dont_know_keeps_it_to_research(self):
+        entries, clarify, _ed = self._copied()
+        ed = sl.ListEditor(entries, clarify, self.dest, trash=os.remove, deferred=True)
+        warbler = clarify[0].sighting
+        msg = ed.mark_unknown(warbler, "warbler")
+        self.assertIn("Kept to research: warbler", msg)
+        self.assertEqual(ed.summary()["research"], 1)
+        lion = [e for e in entries if e.species == "Lion"][0]
+        ed.mark_unknown(lion.pick)                                     # (sure, says the AI: you aren't)
+        self.assertNotIn(lion, entries)
+        ed.apply()
+        files = self._files()
+        self.assertTrue(any(f.startswith(os.path.join("Spain", "To identify", "warbler")) for f in files))
+        self.assertTrue(any(f.startswith(os.path.join("Kenya", "To identify", "Unknown")) for f in files))
+        self.assertFalse(any("To clarify" in f for f in files))
+        ed.close()
+        # Identify again: still to research (even with no room in To clarify), where it was
+        _p, _pl, res = self._run(decisions=sl.load_list(self.dest)["decisions"])
+        entries2, clarify2 = sl.build(res["sightings"], per_guess=0)
+        sl.plan_copies(entries2, clarify2, self.dest)
+        research = {c.sighting.pick.path: c for c in clarify2}
+        self.assertEqual(research[self.warbler].sighting.unknown, "warbler")
+        self.assertTrue(research[self.warbler].kept)
+        self.assertEqual(research[self.lion].sighting.unknown, "")
+        self.assertFalse(any(e.species == "Lion" for e in entries2))
+        # and naming it later moves it out of To identify, like any other
+        ed2 = sl.ListEditor(entries2, clarify2, self.dest, trash=os.remove)
+        ed2.assign_photo(research[self.warbler].sighting, "Chiffchaff", "Phylloscopus collybita", "birds")
+        self.assertIn(os.path.join("Spain", "Birds", "Chiffchaff (Phylloscopus collybita)_2019-03-15.JPG"),
+                      self._files())
+
+    def test_recheck_within_a_hint(self):
+        import numpy as np
+        import reviewer_refine as rf
+
+        class LearnModel(FakeModel):
+            _emb = np.eye(5, 8, dtype=np.float32)
+            _scale = 20.0
+        with mock.patch("reviewer_species.get_species_model", return_value=LearnModel()):
+            ident = self._identifier()
+            names = lambda idx: sorted(LearnModel.labels[i][0] for i in idx)     # noqa: E731
+            self.assertEqual(names(ident.hint_species("warbler")), ["Chiffchaff", "Willow Warbler"])  # (+ genus)
+            self.assertEqual(names(ident.hint_species("mammal")), ["Iberian Lynx", "Lion"])
+            self.assertEqual(names(ident.hint_species("", like="Upupa epops")),
+                             ["Chiffchaff", "Hoopoe", "Willow Warbler"])     # (no hint: the same type)
+            # the photo looks most like a lynx, then a chiffchaff: within "warbler", a chiffchaff
+            f = np.array([0.9, 0, 0, 0.4, 0, 0, 0, 0], np.float32)
+            self.results["DSC_0200.JPG"] = dict(result("Willow Warbler", 0.45), f=rf.pack(f))
+            photos = sl.find_photos(self.root, exclude=self.dest)
+            s = next(ph for ph in photos if ph.path == self.warbler)
+            sight = sl.Sighting(s.place, "ES", [s], s, "Willow Warbler", "Phylloscopus trochilus")
+            got = ident.rescreen(sight, "warbler")
+            self.assertEqual([g[0] for g in got], ["Chiffchaff", "Willow Warbler"])
+            self.assertAlmostEqual(sum(g[2] for g in got), 1.0, places=3)
+
+    def test_frames_are_ordered_by_their_score(self):
+        # (the scores only order the photos in Review's Best photo view)
+        self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
+        photos, _pl, res = self._run()
+        entries, clarify = sl.build(res["sightings"])
+        ident = self._identifier()
+        by_name = {os.path.basename(p.path): p for p in photos}
+        for name, q in (("DSC_001.JPG", 20), ("DSC_002.JPG", 85), ("DSC_003.JPG", 40), ("DSC_005.JPG", 30)):
+            ident.cache.put(by_name[name].key, **{ident.FRAME_KEY: q})
+        ident.cache.put(by_name["DSC_004.JPG"].key, **{ident.FRAME_KEY: 60})      # (the Best copy: +15 = 75)
+        lynx = [e for e in entries if e.species == "Iberian Lynx"][0]
+        score, frame = ident.best_frame(lynx.pick)
+        self.assertEqual((os.path.basename(frame.path), score), ("DSC_002.JPG", 85))
+        before = lynx.pick.shot
+        self.assertEqual(ident.choose_best(entries), 0)
+        self.assertIs(lynx.pick.shot, before)                  # (nothing changed unless you choose)
+
+    def test_you_choose_the_best_photo(self):
+        self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
+        photos, _pl, res = self._run()
+        entries, clarify = sl.build(res["sightings"])
+        sl.copy_list(entries, clarify, self.dest)
+        ed = sl.ListEditor(entries, clarify, self.dest, trash=os.remove, deferred=True)
+        lynx = [e for e in entries if e.species == "Iberian Lynx"][0]
+        frame = next(p for p in lynx.pick.photos if os.path.basename(p.path) == "DSC_005.JPG")
+        ed.choose_photo(lynx, lynx.pick, frame)
+        self.assertEqual(ed.summary()["copy_in"], 1)          # (the copy is replaced when you resolve)
+        ed.apply()
+        with open(os.path.join(self.dest, lynx.dest), "rb") as a, open(self.lynx[4], "rb") as b:
+            self.assertEqual(a.read(), b.read())
+        self.assertEqual(len([f for f in self._files() if f.startswith(os.path.join("Spain", "Mammals"))]), 1)
+        ed.close()
+        # Identify again: your choice is kept, whatever the scores say
+        photos, _pl, res = self._run()
+        entries2, clarify2 = sl.build(res["sightings"])
+        ident = self._identifier()
+        for p in photos:
+            ident.cache.put(p.key, **{ident.FRAME_KEY: 99 if os.path.basename(p.path) == "DSC_001.JPG" else 10})
+        ident.choose_best(entries2, chosen=sl.load_list(self.dest)["best"])
+        lynx2 = [e for e in entries2 if e.species == "Iberian Lynx"][0]
+        self.assertEqual(os.path.basename(lynx2.pick.shot.path), "DSC_005.JPG")
+        sl.plan_copies(entries2, clarify2, self.dest)
+        self.assertTrue(lynx2.kept)
+
+    def test_records_in_a_country_are_offline(self):
+        ident = self._identifier()
+
+        class Ranker:
+            @staticmethod
+            def region(iso):
+                return {"species": {"Upupa epops": 412}} if iso == "ES" else None
+        ident.ranker = Ranker()
+        self.assertEqual(ident.records("Upupa epops", "ES"), 412)
+        self.assertEqual(ident.records("Panthera leo", "ES"), 0)
+        self.assertIsNone(ident.records("Upupa epops", "KE"))         # (no list for that country)
+
+    def test_photos_for_inaturalist(self):
+        import reviewer_imaging
+        self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
+        later = photo(os.path.join(self.root, "2018", "Spain trip", "DSC_0800.JPG"), "2018:05:01 09:00:00")
+        self.results["DSC_0800.JPG"] = result("Iberian Lynx", 0.95)
+        _p, _pl, res = self._run()
+        entries, clarify = sl.build(res["sightings"])
+        ident = self._identifier()
+        def big(*_a, **_k):                                      # (a fresh full-size preview each time)
+            return Image.new("RGB", (4000, 3000), (90, 120, 60))
+        with mock.patch.object(reviewer_imaging, "load_preview", side_effect=big):
+            out = sl.inat_export(entries, self.dest, ident, "country")
+            self.assertEqual(out["errors"], [])
+            root = os.path.join(self.dest, sl.INAT_FOLDER, "by country")
+            files = sorted(os.path.relpath(os.path.join(d, f), root) for d, _s, fs in os.walk(root)
+                           for f in fs if f.endswith(".jpg"))
+            lynx = [f for f in files if f.startswith(os.path.join("Spain", "Iberian Lynx"))]
+            self.assertEqual(len(lynx), 1)                     # one per species per country
+            self.assertIn(" - Spain", lynx[0])                # (the place in its name)
+            with Image.open(os.path.join(root, lynx[0])) as im:
+                self.assertEqual(max(im.size), sl.INAT_SIDE)   # (2048 px)
+                self.assertTrue(im.getexif().get_ifd(0x8769).get(36867))
+            with open(os.path.join(root, "iNaturalist upload.csv"), encoding="utf-8-sig") as f:
+                rows = list(csv.DictReader(f))
+            self.assertEqual(len(rows), out["observations"])
+            self.assertEqual({r["Scientific name"] for r in rows if r["Country"] == "Spain"},
+                             {"Lynx pardinus", "Upupa epops"})
+            # per trip: the lynx twice (two trips)
+            out2 = sl.inat_export(entries, self.dest, ident, "trip")
+            trips = [r for r in csv.DictReader(open(os.path.join(self.dest, sl.INAT_FOLDER, "by trip",
+                                                                 "iNaturalist upload.csv"), encoding="utf-8-sig"))]
+            self.assertEqual(sum(r["Scientific name"] == "Lynx pardinus" for r in trips), 2)
+            self.assertEqual(out2["errors"], [])
+            self.assertEqual(sl.inat_export(entries, self.dest, ident, "country")["made"], 0)   # (kept)
+        self.assertTrue(os.path.exists(later))
+
+    def test_results_saved_before_new_fields_still_open(self):
+        _p, _pl, res = self._run()
+        entries, clarify = sl.build(res["sightings"])
+        for s in res["sightings"]:
+            for f in ("unknown", "best", "score", "weak"):
+                s.__dict__.pop(f, None)                         # (as saved by an earlier version)
+        sl.save_results(self.user, self.root, res, entries, clarify)
+        got = sl.load_results(self.user, self.root)
+        s = got["res"]["sightings"][0]
+        self.assertIsNone(s.unknown)
+        self.assertFalse(s.weak)
+        self.assertIs(s.shot, s.pick)
+
+    def test_a_mixed_flock_gives_each_species(self):
+        self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
+        flock = dict(result("Iberian Lynx", 0.95), others=[
+            {"box": [0.7, 0.1, 0.8, 0.2], "conf": 0.8, "top": [["Chiffchaff", "Phylloscopus collybita", 0.9]]},
+            {"box": [0.7, 0.5, 0.8, 0.6], "conf": 0.6, "top": [["Iberian Lynx", "Lynx pardinus", 0.9]]},  # (same)
+            {"box": [0.1, 0.7, 0.2, 0.8], "conf": 0.5, "top": [["Lion", "Panthera leo", 0.3]]}])          # (unsure)
+        self.results["DSC_004.JPG"] = flock
+        _p, _pl, res = self._run()
+        found = sorted((s.species, s.part) for s in res["sightings"] if s.pick.path.endswith("DSC_004.JPG"))
+        self.assertEqual(found, [("Chiffchaff", 1), ("Iberian Lynx", 0)])
+        entries, clarify = sl.build(res["sightings"])
+        chiff = [e for e in entries if e.species == "Chiffchaff"][0]
+        self.assertEqual((chiff.iso, chiff.pick.part), ("ES", 1))
+        sl.copy_list(entries, clarify, self.dest)
+        ed = sl.ListEditor(entries, clarify, self.dest, trash=os.remove, sightings=res["sightings"])
+        ed.reject_photo(chiff.pick, "duplicate")              # (the other animal only)
+        self.assertTrue(any(e.species == "Iberian Lynx" for e in entries))
+        self.assertIn(os.path.join("Spain", "Mammals", "Iberian Lynx (Lynx pardinus)_2019-03-14.JPG"),
+                      self._files())
+        decisions = sl.load_list(self.dest)["decisions"]
+        self.assertEqual(list(decisions), [sl.sighting_key(chiff.pick)])
+        self.assertTrue(list(decisions)[0].endswith("#1"))
+        _p, _pl, res2 = self._run(decisions=decisions)       # (Identify again: still only that one gone)
+        found2 = sorted((s.species, s.part) for s in res2["sightings"] if s.pick.path.endswith("DSC_004.JPG"))
+        self.assertEqual(found2, [("Iberian Lynx", 0)])
+
+    def test_what_counts_as_an_animal(self):
+        top = [["Grey Heron", "Ardea cinerea", 0.6]]
+        old = {"top": top, "conf": 0.0}                                  # (read before: a whole-frame guess)
+        self.assertTrue(sl.has_animal(old))
+        new = {"top": top, "conf": 0.0, "tile": 0.1, "v": sl.ANALYSIS_V}  # (looked closer: nothing)
+        self.assertFalse(sl.has_animal(new))
+        far = {"top": top, "conf": 0.0, "tile": 0.45, "v": sl.ANALYSIS_V}  # (a distant bird in the tiles)
+        self.assertTrue(sl.has_animal(far))
+        self.assertTrue(sl.unsure_animal(far))                         # "no animal?"
+        self.assertFalse(sl.unsure_animal({"conf": 0.8}))
+
+    def test_old_animals_are_checked_again_once(self):
+        self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
+        self._run()
+        ident = self._identifier()
+        # (as if read before people stayed people: no version)
+        for k, rec in list(ident.cache.data.items()):
+            if rec.get("a"):
+                ident.cache.put(k, a={x: v for x, v in rec["a"].items() if x != "v"})
+        ident.cache.close()
+        self.calls.clear()
+        _p, _pl, res = self._run()
+        self.assertIn("DSC_004.JPG", self.calls)                        # an animal: checked again
+        self.assertNotIn("DSC_0300.JPG", self.calls)                    # no animal: left
+        self.calls.clear()
+        self._run()
+        self.assertEqual(self.calls, [])                                # once
 
     def test_organised_by_type_species_and_year(self):
         self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
@@ -503,8 +856,8 @@ class SpeciesListTests(unittest.TestCase):
         entries, clarify, ed = self._copied()
         outside = os.path.join(self.tmp, "elsewhere.JPG")
         Path(outside).write_bytes(b"x")
-        ed._remove(outside)
-        ed._remove(self.dest)
+        ed._hold(outside)
+        ed._hold(self.dest)
         self.assertTrue(os.path.exists(outside))
         self.assertTrue(os.path.isdir(self.dest))
 

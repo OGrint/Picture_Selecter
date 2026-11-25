@@ -63,6 +63,29 @@ class RefineTests(unittest.TestCase):
         out = rd.refine(dets, self.img, self.FakeSpecies(["Human", "Homo sapiens", 0.8]))
         self.assertEqual(out[0][0], 1)
 
+    def test_person_stays_person_when_the_species_model_is_unsure(self):
+        # (the species model has no human: a person gets some animal's name, unsure)
+        dets = [[1, 0.9, 0.2, 0.1, 0.8, 0.9]]
+        out = rd.refine(dets, self.img, self.FakeSpecies(["Yellow-legged Gull", "Larus michahellis", 0.08]))
+        self.assertEqual(out[0][0], 1)
+        self.assertFalse(rd.animals(out))       # (and no animal guessed from the whole of a selfie)
+
+    def test_tiles_find_a_distant_animal(self):
+        from PIL import Image
+
+        class FakeDetector:                     # sees the bird only in the top-right tile
+            def detect(self, tile):
+                return [[0, 0.8, 0.4, 0.4, 0.6, 0.6]] if tile.getpixel((0, 0)) == (255, 0, 0) else []
+        img = Image.new("RGB", (300, 200))
+        img.paste((255, 0, 0), (int(2 * 300 / (3 - 2 * 0.15) * 0.85), 0, 300, 200))
+        found = rd.tiled_animals(rd.detect_tiled(FakeDetector(), img), [])
+        self.assertTrue(found)
+        d = found[0]
+        self.assertEqual((d[0], d[1]), (0, 0.8))
+        self.assertTrue(0.6 < d[2] < d[4] <= 1.0 and 0.0 <= d[3] < d[5] <= 1.0)
+        # people first: an "animal" on a person is left out
+        self.assertEqual(rd.tiled_animals(found, [[1, 0.9, 0.5, 0.0, 1.0, 1.0]]), [])
+
     def test_hidden_animal_found_by_species_model(self):
         out = rd.refine([], self.img, self.FakeSpecies(["Grey Heron", "Ardea cinerea", 0.55]))
         self.assertTrue(rd.animals(out))

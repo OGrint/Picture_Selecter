@@ -828,7 +828,7 @@ RAW_JPEG_MIN_SIDE = 2500      # an embedded preview smaller than this: develop t
 
 
 def raw_to_jpeg(src: str, target: str, when: Optional[float] = None, description: str = "",
-                comment: str = "") -> None:
+                comment: str = "", max_side: Optional[int] = None) -> None:
     """
     A JPEG of a RAW file for a list (the species list): the camera's own
     full-size preview embedded in the RAW (its colours, about a second for a
@@ -843,6 +843,8 @@ def raw_to_jpeg(src: str, target: str, when: Optional[float] = None, description
     if max(img.size) < RAW_JPEG_MIN_SIDE and _RAWPY_AVAILABLE and Path(src).suffix.lower() in RAW_EXTS:
         with rawpy.imread(src) as raw:
             img = Image.fromarray(raw.postprocess(use_camera_wb=True))
+    if max_side and max(img.size) > max_side:          # (smaller: an upload)
+        img.thumbnail((max_side, max_side), Image.LANCZOS)
     exif = Image.Exif()
     exif[0x0112] = 1                                # (already the right way up)
     if when:

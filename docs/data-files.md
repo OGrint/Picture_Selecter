@@ -98,9 +98,13 @@ In a list made by **Species list from archive**, `species_list.json` records the
 
 `%APPDATA%\PhotoReviewer\species_list_results\` keeps the last Identify results for each folder (with your Review changes), so Review opens without identifying again. Delete it to forget them.
 
+`species_list.json` also records the photo you chose for each species in Review's *Best photo* view (`best`) and which frame each species' copy was made from (`shot`).
+
 In the *Species list* folder, `Species list.xlsx` is every list in one workbook (rewritten with the CSVs; if it's open in Excel it's skipped that time). A hidden `.removed` folder holds copies removed in Review until Review closes (for undo); they then go to the Recycle Bin.
 
-`%APPDATA%\PhotoReviewer\inat_photos\<Scientific_name>\` holds the iNaturalist reference photos used by **Compare with iNaturalist** (with `photos.json`: their credits and the species' iNaturalist page). Delete it to download them again.
+`%APPDATA%\PhotoReviewer\review_previews\` holds screen-size JPEG previews made by Review in the background (photos that are RAW or on another drive, read once), so flicking through them is quick. The oldest go past 6,000; delete the folder any time.
+
+`%APPDATA%\PhotoReviewer\inat_photos\<Scientific_name>\` holds what **Compare with iNaturalist** downloaded for each species: its photos, `map.png` (the range map) and `photos.json` (the photos' credits, the species' iNaturalist page, and its facts: family, size, records, status, description). `_world_map.png` there is the base map, shared by every species. Delete it to download them again.
 
 `%APPDATA%\PhotoReviewer\species_examples.json` holds the photos you've confirmed (in the species list's Review, the main window, or named earlier) as examples the AI learns from (path, species, country, day and place, your note, and the photo's fingerprint: 768 numbers, about 2 KB). It's shared by every species list; delete it to start the learning again. `species_scan.jsonl` now keeps each photo's fingerprint too.
 

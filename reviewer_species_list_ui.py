@@ -107,9 +107,12 @@ class SpeciesListDialog(ctk.CTkToplevel):
                      state="readonly").pack(side="left", padx=4)
         ctk.CTkLabel(opts, text="photos per best guess", text_color=C_MUTED,
                      font=ctk.CTkFont("Helvetica", 10)).pack(side="left")
+        self._inat_btn = ctk.CTkButton(opts, text="5  iNaturalist…", width=120, state="disabled",
+                                       command=self._inat)
+        self._inat_btn.pack(side="right")
         self._review_btn = ctk.CTkButton(opts, text="4  Review…", width=110, state="disabled",
                                          command=self._review)
-        self._review_btn.pack(side="right")
+        self._review_btn.pack(side="right", padx=6)
         self._jpeg = tk.BooleanVar(value=bool(self._settings.get("species_list_jpeg", True)))
         ctk.CTkCheckBox(opts, text="RAW as JPEG", variable=self._jpeg, width=20,
                         command=self._jpeg_changed).pack(side="right", padx=(10, 0))
@@ -372,6 +375,10 @@ class SpeciesListDialog(ctk.CTkToplevel):
                                        decisions=sl.load_list(dest).get("decisions"))
             entries, clarify = sl.build(res["sightings"], per_guess, name_of=self._identifier.local_name)
             sl.plan_copies(entries, clarify, dest, jpeg)      # (Tk is only read on its own thread)
+            # each species' photo: its best frame (predicted), for species not yet in the list
+            self._identifier.choose_best(entries, lambda m: self._q.put(("status", m)), self._stop,
+                                         chosen=sl.load_list(dest).get("best"))
+            sl.plan_copies(entries, clarify, dest, jpeg)
             self._q.put(("identified", (res, entries, clarify)))
         except Exception as e:
             self._q.put(("error", f"Identifying failed: {e}"))
@@ -441,6 +448,7 @@ class SpeciesListDialog(ctk.CTkToplevel):
             self._tabs.select(1)
         self._copy_btn.configure(state="normal" if (entries or clarify) else "disabled")
         self._review_btn.configure(state="normal" if (entries or clarify) else "disabled")
+        self._inat_btn.configure(state="normal" if entries else "disabled")
 
     def _open_original(self, e) -> None:
         row = self._rtree.identify_row(e.y)
@@ -510,13 +518,63 @@ class SpeciesListDialog(ctk.CTkToplevel):
         ident = self._ident()
         editor = sl.ListEditor(self._entries, self._clarify, self._dest.get().strip(),
                                examples=ident.examples, sightings=self._res.get("sightings"),
-                               name_of=ident.local_name)
+                               name_of=ident.local_name, background_save=True, deferred=True)
         editor.feature_of = lambda k: (ident.cache.get(k).get("a") or {}).get("f")
 
         def closed():
             self._show_results(self._res, self._entries, self._clarify)
             self._save_results()
-        SpeciesReviewWindow(self, editor, ident.resolve, ident.names, on_close=closed)
+        SpeciesReviewWindow(self, editor, ident.resolve, ident.names, on_close=closed, rescreen=ident.rescreen,
+                            records=ident.records, frame_score=ident.frame_score)
+
+    # ── 5. iNaturalist ───────────────────────────────────────────────────────
+
+    def _inat(self) -> None:
+        """Photos ready for iNaturalist's uploader: one per observation, its best frame."""
+        if self._busy or not self._entries:
+            return
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("iNaturalist upload")
+        dlg.configure(fg_color=C_SURFACE)
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        ctk.CTkLabel(dlg, text="Photos ready for iNaturalist's uploader", text_color=C_TEXT,
+                     font=ctk.CTkFont("Helvetica", 14, "bold")).pack(anchor="w", padx=20, pady=(16, 8))
+        unit = tk.StringVar(value=self._settings.get("species_list_inat_unit", "country"))
+        for value, text in (("country", "One per species per country  (the historic backlog)"),
+                            ("trip", "One per species per trip  (current photos: each trip folder)")):
+            ctk.CTkRadioButton(dlg, text=text, variable=unit, value=value).pack(anchor="w", padx=24, pady=3)
+        mine = tk.BooleanVar(value=bool(self._settings.get("species_list_inat_mine", False)))
+        ctk.CTkCheckBox(dlg, text="Only sightings you've named (not the AI's own)", variable=mine
+                        ).pack(anchor="w", padx=24, pady=(10, 4))
+        ctk.CTkLabel(dlg, justify="left", text_color=C_MUTED, font=ctk.CTkFont("Helvetica", 10), text=(
+            "Each observation gets its best photo (the sharpest animal), as a 2048 px JPEG with its date,\n"
+            "the species and place in its name and description, in the list's iNaturalist folder,\n"
+            "with iNaturalist upload.csv to work from. Drag the photos into iNaturalist's uploader\n"
+            "and drop each pin there: the D850 records no location. Nothing is sent from here.")
+                     ).pack(anchor="w", padx=20, pady=(8, 0))
+        row = ctk.CTkFrame(dlg, fg_color="transparent")
+        row.pack(fill="x", padx=20, pady=16)
+
+        def go():
+            self._settings.update(species_list_inat_unit=unit.get(), species_list_inat_mine=mine.get())
+            save_app_settings(self._settings)
+            dlg.destroy()
+            self._start(self._inat_work, self._dest.get().strip(), unit.get(), mine.get())
+        ctk.CTkButton(row, text="Make the photos", fg_color=C_ACCENT, width=150, command=go).pack(side="right")
+        ctk.CTkButton(row, text="Cancel", fg_color=C_BORDER, width=100, command=dlg.destroy
+                      ).pack(side="right", padx=8)
+        dlg.grab_set()
+
+    def _inat_work(self, dest: str, unit: str, mine: bool) -> None:
+        try:
+            ident = self._ident()
+            done = sl.inat_export(self._entries, dest, ident, unit, mine, stop=self._stop,
+                                  chosen=sl.load_list(dest).get("best"),
+                                  progress=lambda n, t, d: self._q.put(("progress", (n, t, d))))
+            self._q.put(("inat", done))
+        except Exception as e:
+            self._q.put(("error", f"iNaturalist photos failed: {e}"))
 
     # ── 3. copy ──────────────────────────────────────────────────────────────
 
@@ -561,7 +619,7 @@ class SpeciesListDialog(ctk.CTkToplevel):
     def _start(self, fn, *args) -> None:
         self._busy = True
         self._stop.clear()
-        for b in (self._find_btn, self._ident_btn, self._copy_btn, self._review_btn):
+        for b in (self._find_btn, self._ident_btn, self._copy_btn, self._review_btn, self._inat_btn):
             b.configure(state="disabled")
         self._stop_btn.configure(state="normal")
         self._bar.set(0)
@@ -573,6 +631,7 @@ class SpeciesListDialog(ctk.CTkToplevel):
         self._ident_btn.configure(state="normal" if self._photos else "disabled")
         self._copy_btn.configure(state="normal" if (self._entries or self._clarify) else "disabled")
         self._review_btn.configure(state="normal" if (self._entries or self._clarify) else "disabled")
+        self._inat_btn.configure(state="normal" if self._entries else "disabled")
         self._stop_btn.configure(state="disabled")
 
     def _poll(self) -> None:
@@ -612,6 +671,20 @@ class SpeciesListDialog(ctk.CTkToplevel):
                     n, total, d = data
                     self._bar.set(n / max(1, total))
                     self._status.configure(text=f"Copying {n} / {total}: {d}")
+                elif kind == "inat":
+                    self._finish()
+                    msg = (f"{data['observations']} observations: {data['made']} photos made"
+                           + (f", {data['kept']} already there" if data["kept"] else "")
+                           + f".\n\nIn {data['folder']}\nwith iNaturalist upload.csv. Drag them into "
+                           "iNaturalist's uploader and drop each pin (the place is in each name).")
+                    if data["errors"]:
+                        msg += f"\n\n{len(data['errors'])} problem(s):\n" + "\n".join(data["errors"][:6])
+                    self._status.configure(text=msg.split("\n")[0])
+                    if mb.askyesno("iNaturalist", msg + "\n\nOpen the folder?", parent=self):
+                        try:
+                            os.startfile(data["folder"])            # (Windows)
+                        except (OSError, AttributeError):
+                            pass
                 elif kind == "copied":
                     self._finish()
                     msg = (f"{'Stopped — ' if self._stop.is_set() else ''}Copied {data['copied']} photos "

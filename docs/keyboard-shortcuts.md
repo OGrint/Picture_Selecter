@@ -91,16 +91,26 @@ All the gallery keys above, plus:
 
 ## Species list Review
 
+In the **gallery (G)**: click / Ctrl+click / Shift+click / drag a box / Ctrl+A to select, then Del, D N F U W or Enter decide every selected photo at once (one Ctrl+Z undoes the batch). Arrows move the cursor (Shift: select), Space adds the one under it, Esc clears the selection (again: one at a time).
+
 | Key | Action |
 |---|---|
 | 1 – 3 | Pick that guess (already in the list: keep the photo there, remove this copy) |
 | Shift + 1 – 3 | Pick that guess and keep this photo instead |
 | Enter | Confirm the name in the box |
 | Shift + Enter | Confirm, and keep this photo instead of the one in the list |
-| Del / X | Remove this photo from the list (a species seen elsewhere keeps its next photo) |
+| K | Don't know what it is: keep it to research (the note box is your hint, e.g. "terrapin"); 🔁 Re-check asks the AI again within the hint; still unknown at Resolve → To identify |
+| Del / Backspace / X | Remove this photo from the list (a species seen elsewhere keeps its next photo) |
+| D / N / F / U / W | Remove it with a reason: duplicate / no animal / too far or blurred / can't identify / not wild |
 | Ctrl + Z | Undo the last change |
-| ← → | Previous / next photo |
+| ← → (or numpad 4 / 6) | Previous / next photo (every photo stays, with what you decided) |
+| Tab | Next photo still to decide |
+| Home / End | First / last photo |
 | ↑ ↓ | The burst's other frames |
+| G | Gallery: select many and decide them at once |
+| Wheel / drag / Z | Zoom in at the mouse / move round / ×4 or back to the whole photo |
+| Enter (Best photo view) | Keep the predicted best (★); click any other to keep that one |
+| S | The photos under this guess side by side |
 | V / double-click | Open the original |
 | O | Show the original in its folder (Explorer) |
 | Esc | Close |

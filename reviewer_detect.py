@@ -25,7 +25,7 @@ log = logging.getLogger("photo_reviewer")
 
 MODEL_FILE = "md_v1000.0.0-spruce_640.onnx"
 MODEL_ID   = "MDv1000-spruce-v3"       # stored with cached detections (checked labels)
-CLASSES    = ("animal", "person", "vehicle")
+# (MegaDetector classes: 0 animal, 1 person, 2 vehicle)
 
 STORE_CONF  = 0.10     # detections kept in the cache
 ANIMAL_CONF = 0.15     # an animal counts as present at this confidence
@@ -34,6 +34,13 @@ NMS_IOU     = 0.45
 SMALL_AREA  = 0.01     # animal box below 1 % of the frame = "very small"
 EDGE_MARGIN = 0.004    # box this close to the border = "cut off"
 SPECIES_PRESENT = 0.3  # species model this sure about the frame = animal present
+# The species model has no human in its list, so a person's box always gets some
+# animal's name, though rarely with any confidence (median 8% on 229 people), while
+# a close-up bird MegaDetector calls a "person" gets a confident one (7 of 8).
+PERSON_IS_ANIMAL = 0.5  # a "person" box counts as an animal only if the species model is this sure
+PERSON_SURE = 0.5       # a person this clear: no guessing an animal from the whole frame
+TILE_GRID = (3, 2)      # a closer look: the frame in 3 × 2 overlapping tiles
+TILE_OVERLAP = 0.15
 
 # Suggestion codes → text shown to the user
 SUGGESTION_TEXT = {
@@ -181,7 +188,7 @@ def refine(dets: list, img: Image.Image, species_model=None) -> list:
             if species_model is not None:
                 try:
                     top = species_model.predict(img, d[2:6], k=1)[0]
-                    if not top[1].startswith("Homo "):
+                    if top[2] >= PERSON_IS_ANIMAL and not top[1].startswith("Homo "):
                         d[0] = 0
                 except Exception as e:
                     log.debug("Person check failed: %s", e)
@@ -191,7 +198,8 @@ def refine(dets: list, img: Image.Image, species_model=None) -> list:
     # Busy scenes (reeds, branches) can hide an animal from the detector; if
     # the species model is confident about the whole frame, count it as
     # present. Marked "species": no box, so not used for edge / size checks.
-    if species_model is not None and not animals(out):
+    people = any(d[0] == 1 and d[1] >= PERSON_SURE for d in out)
+    if species_model is not None and not animals(out) and not people:
         try:
             top = species_model.predict(img, None, k=1)[0]
             if top[2] >= SPECIES_PRESENT and not top[1].startswith("Homo "):
@@ -199,6 +207,44 @@ def refine(dets: list, img: Image.Image, species_model=None) -> list:
         except Exception as e:
             log.debug("Species presence check failed: %s", e)
     return out
+
+
+def detect_tiled(detector, img: Image.Image, grid: tuple = TILE_GRID,
+                 overlap: float = TILE_OVERLAP) -> list[list]:
+    """A closer look for distant animals: MegaDetector on overlapping tiles of a
+    large image (a whole frame shrunk to 640 px leaves a far bird a few pixels).
+    Animal and person boxes, [class, conf, x0, y0, x1, y1] on the whole image,
+    best first (see tiled_animals: people first, then the animals that aren't)."""
+    W, H = img.size
+    cols, rows = grid
+    tw, th = W / (cols - (cols - 1) * overlap), H / (rows - (rows - 1) * overlap)
+    out = []
+    for r in range(rows):
+        for c in range(cols):
+            x0, y0 = c * tw * (1 - overlap), r * th * (1 - overlap)
+            box = (int(x0), int(y0), int(min(W, x0 + tw)), int(min(H, y0 + th)))
+            bw, bh = box[2] - box[0], box[3] - box[1]
+            for d in detector.detect(img.crop(box)):
+                if d[0] in (0, 1):
+                    out.append([d[0], d[1], round((box[0] + d[2] * bw) / W, 4), round((box[1] + d[3] * bh) / H, 4),
+                                round((box[0] + d[4] * bw) / W, 4), round((box[1] + d[5] * bh) / H, 4)])
+    return sorted(out, key=lambda d: -d[1])
+
+
+def _inside(a: list, b: list) -> float:
+    """How much of box a (x0, y0, x1, y1) lies inside box b."""
+    w = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    h = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    area = max(1e-9, (a[2] - a[0]) * (a[3] - a[1]))
+    return w * h / area
+
+
+def tiled_animals(found: list[list], people: list[list]) -> list[list]:
+    """People first: animal boxes from the tiles that are mostly on a person
+    (seen in the whole frame or in the tiles: zoomed in, an arm or a face can
+    look like an animal) are left out."""
+    persons = [p[2:6] for p in people] + [d[2:6] for d in found if d[0] == 1 and d[1] >= ANIMAL_CONF]
+    return [d for d in found if d[0] == 0 and not any(_inside(d[2:6], p) >= 0.3 for p in persons)]
 
 
 # ── Interpreting detections ──────────────────────────────────────────────────
