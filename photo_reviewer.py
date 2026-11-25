@@ -53,8 +53,10 @@ from send2trash import send2trash
 
 # Image access (no Tkinter) and persistence (no Tkinter) live in their own modules
 from reviewer_imaging import (
-    CLIP_B, CLIP_G, CLIP_R, RAW_EXTS, SCORE_VERSION, SUBJECT_BLOWN, SUPPORTED_EXTS,
-    _capture_timestamp, apply_raw_clipping, raw_clip_mask, raw_clip_text, raw_clipping, _extract_thumb_img,
+    CLIP_B, CLIP_G, CLIP_R, RAW_EXTS, SCORE_VERSION, SUBJECT_BLOWN, SUPPORTED_EXTS, slow_drive,
+    _capture_timestamp, apply_raw_clipping, background_read, foreground_read,
+    hold_background, raw_clip_mask,
+    raw_clip_text, raw_clipping, _extract_thumb_img,
     _open_thumb_unoriented, auto_orient, build_histogram, composite_score,
     convert_to_jpeg, format_exif_display, load_preview, load_small_thumb, np,
     read_exif, read_focus_area, score_image)
@@ -70,7 +72,8 @@ from reviewer_search import (
     load_index, make_root, resolve_root, root_name, save_index, search_status, stale_files)
 from reviewer_species import (
     HISTORY_FILE as SPECIES_HISTORY_FILE, SpeciesHistory, get_species_model,
-    load_predictions, save_predictions, species_status)
+    load_predictions, merge_synonyms, save_predictions, species_status)
+from reviewer_refine import get_learning
 from reviewer_import import ImportDialog
 from reviewer_eyes import (
     burst_eye_note, eye_status, get_eye_finder, load_eyes, measure as measure_eye, save_eyes)
@@ -474,7 +477,7 @@ def make_thumb_cell(parent, path: str, app, cell_w: int, cell_h: int,
     if note:
         tk.Label(cell, text=f"⚠ {note}", bg=C_SURFACE, fg=C_WARN,
                  font=("Helvetica", 7, "bold")).pack(padx=4)
-    elif app._eye_note(path) == "best":
+    if app._eye_note(path) == "best":            # shown even when there's also a ⚠ note
         tk.Label(cell, text="◉ Sharpest eye in burst", bg=C_SURFACE, fg=C_BEST,
                  font=("Helvetica", 7, "bold")).pack(padx=4)
     tk.Label(cell, text=Path(path).name, bg=C_SURFACE, fg=C_MUTED,
@@ -780,6 +783,8 @@ class ThumbnailGrid(tk.Frame):
         self._paths = list(paths)
         if scroll_to:
             self._pending_scroll = scroll_to
+            if self._cursor not in self._paths and scroll_to in self._paths:
+                self._cursor = self._anchor = scroll_to   # arrows start from the photo you were on
         self._relayout(keep_scroll)
 
     def _on_configure(self, event) -> None:
@@ -1693,7 +1698,10 @@ class InlineIdReviewView(tk.Frame):
         self._canvas.bind("<Double-Button-1>", lambda e: self._open_in_viewer())
 
         tk.Label(right, text="SUGGESTIONS  (press 1–5)", bg=C_SURFACE, fg=C_MUTED,
-                 font=("Helvetica", 8, "bold")).pack(anchor="w", padx=12, pady=(12, 4))
+                 font=("Helvetica", 8, "bold")).pack(anchor="w", padx=12, pady=(12, 0))
+        self._learned = tk.Label(right, text="", bg=C_SURFACE, fg=C_MUTED, justify="left",
+                                 wraplength=270, font=("Helvetica", 8))
+        self._learned.pack(anchor="w", padx=12, pady=(0, 4))
         self._sugg = tk.Frame(right, bg=C_SURFACE)
         self._sugg.pack(fill="x", padx=8)
         tk.Label(right, text="Species", bg=C_SURFACE, fg=C_MUTED,
@@ -1765,6 +1773,7 @@ class InlineIdReviewView(tk.Frame):
             app._request_species(g[0], urgent=True)
             self.after(800, lambda: self._refresh_suggestions(g))
         self._fill_suggestions(top)
+        self._learned.configure(text=app._learning.summary())
         self._species.configure(values=[n for n, _s, _p in (top or [])] +
                                 [n for n in app._species_hist.recent()
                                  if n not in [x[0] for x in (top or [])]])
@@ -1969,6 +1978,9 @@ class InlineSearchView(ThumbnailGrid):
             return
         self._sim = dict(results)
         self.set_paths([p for p, _s in results])
+        # arrows / numpad now move through the results (after this key press is done,
+        # so the Enter that ran the search doesn't also open a result)
+        self.after_idle(self._app._release_field_focus)
 
     def _make_cell(self, parent: tk.Frame, path: str) -> tk.Frame:
         cell = self._cell(parent, path, show_scores=False)
@@ -2107,6 +2119,9 @@ class PhotoReviewer(ctk.CTkToplevel):
         # Species suggestions (one per burst) for naming
         self._species_model = None
         self._species_hist = SpeciesHistory(_user_data_dir() / SPECIES_HISTORY_FILE)
+        # what the AI has learned from your IDs (here and in the species list's Review)
+        self._learning = get_learning(str(_user_data_dir()))
+        self._species_feat: dict = {}           # burst → the photo's fingerprint (this session)
         self._species_q: queue.Queue = queue.Queue()
         self._species_pending: set[str] = set()
         self._species_bg: Optional[ThreadPoolExecutor] = None
@@ -2166,13 +2181,26 @@ class PhotoReviewer(ctk.CTkToplevel):
 
         self._build_status()
         self._build_ui()
+        # Saving happens on its own thread: on a slow (USB) drive a sidecar or
+        # session write can take a second, and the window must not wait for it.
+        self._w_cv = threading.Condition()
+        self._w_xmp: dict[str, dict] = {}            # path → latest tags to write
+        self._w_status: Optional[tuple] = None       # (file, snapshot, backup)
+        self._w_jobs: dict = {}                      # key → (save function, args): caches
+        self._w_busy = False
+        threading.Thread(target=self._writer_loop, daemon=True, name="writer").start()
         self.bind_all("<KeyPress>", self._on_key)
         self.bind_all("<Tab>", self._on_tab)
+        # a click anywhere that isn't a text box gives the keys back to the app
+        self.bind_all("<ButtonPress-1>", self._click_takes_focus, add="+")
         self.after(500, self._poll_background)
 
         # _show_current is called after fullscreen is applied (in _go_fullscreen)
-        # so canvas dimensions are real when we first render
-        self.after(300, self._start_hash_workers)
+        # so canvas dimensions are real when we first render. Preparing the folder
+        # (reading every file) starts once the first photo is on screen, so it
+        # doesn't compete with it; 3 s at the latest.
+        self._hash_started = False
+        self.after(3000, self._start_hash_once)
 
     # ── Status ────────────────────────────────────────────────────────────────
 
@@ -2189,6 +2217,7 @@ class PhotoReviewer(ctk.CTkToplevel):
         self._detections: dict[str, list] = load_detections(self.detect_file, valid, MODEL_ID)
         self._emb = load_features(self.base_dir, valid)
         self._species_pred: dict[str, list] = load_predictions(self.base_dir, valid)
+        self._species_feat = {}                 # (fingerprints are per folder)
         self._species_dirty = False
         self._eyes: dict[str, dict] = load_eyes(self.base_dir, valid)
         self._eyes_dirty = False
@@ -2245,18 +2274,23 @@ class PhotoReviewer(ctk.CTkToplevel):
                 return
             h = cached.get(path)
             ts: Optional[float] = None
-            try:
-                if h is None:
-                    img = _open_thumb_unoriented(path)
-                    ts  = _capture_timestamp(path, img)
-                    if getattr(img, "format", None) == "JPEG":
-                        img.draft("L", (64, 64))      # 1/8-scale decode is plenty
-                    h   = imagehash.average_hash(auto_orient(img).convert("L"))
-                else:
-                    ts = _capture_timestamp(path)
-            except Exception as e:
-                log.warning("Hashing failed for %s: %s", path, e)
-            focus = read_focus_area(path, *grid)
+            focus = None
+            with background_read(path):
+                try:
+                    if h is None:
+                        img = _open_thumb_unoriented(path)
+                        ts  = _capture_timestamp(path, img)
+                        if getattr(img, "format", None) == "JPEG":
+                            img.draft("L", (64, 64))      # 1/8-scale decode is plenty
+                        img = auto_orient(img).convert("L")
+                    else:
+                        ts = _capture_timestamp(path)
+                except Exception as e:
+                    log.warning("Hashing failed for %s: %s", path, e)
+                    img = None
+                focus = read_focus_area(path, *grid)
+            if h is None and img is not None:
+                h = imagehash.average_hash(img)
             result.put((path, h, ts, focus))
 
         for path in self._hash_queue:
@@ -2295,7 +2329,13 @@ class PhotoReviewer(ctk.CTkToplevel):
 
     def _save_hash_progress(self) -> None:
         self._hash_last_save = time.monotonic()
-        save_hash_cache(self.hash_file, self._hashes, self._timestamps, self._focus)
+        self._queue_job(("hashes", self.hash_file), save_hash_cache, self.hash_file,
+                        dict(self._hashes), dict(self._timestamps), dict(self._focus))
+
+    def _start_hash_once(self) -> None:
+        if not getattr(self, "_hash_started", True):
+            self._hash_started = True
+            self._start_hash_workers()
 
     def _check_folder_writable(self) -> None:
         """Warn once if results can't be saved (read-only folder, locked card)."""
@@ -2454,12 +2494,14 @@ class PhotoReviewer(ctk.CTkToplevel):
         result = (gen, path, None, _SKIPPED, _SKIPPED, _SKIPPED, _SKIPPED)
         if gen == self._session_gen:
             try:
-                img  = load_preview(path, SCORE_MIN_SIDE)
+                with background_read(path):
+                    img = load_preview(path, SCORE_MIN_SIDE)
+                    img.load()
+                    focus = (self._focus[path] if path in self._focus
+                             else read_focus_area(path, *self._af_grid))
                 dets = self._detections.get(path)
                 if dets is None and self._detector is not None:
                     dets = refine(self._detector.detect(img), img, self._species_model)
-                focus = (self._focus[path] if path in self._focus
-                         else read_focus_area(path, *self._af_grid))
                 region, kind = self._sharpness_region(focus, dets)
                 emb = _SKIPPED
                 if self._embedder is not None and path not in self._emb:
@@ -2628,7 +2670,8 @@ class PhotoReviewer(ctk.CTkToplevel):
             self._flash_title(msg, 2000)
             self._request_eye(path, urgent=True)
             return
-        self._ensure_detail_now()
+        if not self._ensure_detail_now(then=self._zoom_to_eye):
+            return                                   # zooms when the full image is in
         cw = self._canvas_w or 1200
         ch = self._canvas_h or 800
         iw, ih = self._full_res_size()
@@ -2764,10 +2807,17 @@ class PhotoReviewer(ctk.CTkToplevel):
         re-ranked so species you've confirmed before count for more.
         """
         g = self._file_burst.get(path, [path])
-        raw = next((self._species_pred[p] for p in [self._burst_rep(path)] + g
-                    if p in self._species_pred), None)
-        if raw is None:
+        key = next((p for p in [self._burst_rep(path)] + g if p in self._species_pred), None)
+        if key is None:
             return None
+        raw = self._species_pred[key]
+        if self._learning.active:              # pulled towards the IDs you've confirmed
+            feat = self._species_feat.get(key)
+            if feat is None:
+                self._request_species(key)         # (its fingerprint, in the background)
+            elif feat is not False:                # (False: unreadable, not asked again)
+                raw = self._learning.top(feat) or raw
+        raw = merge_synonyms(raw, getattr(self._species_model, "same_as", None) or {})
         prior = self._species_hist.prior()
         iso = self._folder_region()
         region = self._regions.get(iso) if iso else None
@@ -2787,14 +2837,16 @@ class PhotoReviewer(ctk.CTkToplevel):
         region = self._regions.get(iso) if iso else None
         groups = self._species_model.group if self._species_model else {}
         if region and region_weight(scientific, groups.get(scientific), region) < 1.0:
-            return f"not recorded in {region.get('name', iso)}"
+            from reviewer_regions import out_of_range
+            return f"not recorded in {region.get('name', iso)}: {out_of_range(groups.get(scientific))}"
         return ""
 
     def _request_species(self, path: str, urgent: bool = False) -> None:
         if self._species_model is None:
             return
         rep = self._burst_rep(path)
-        if rep in self._species_pred or rep in self._species_pending:
+        if rep in self._species_pending or (rep in self._species_pred and not (
+                self._learning.active and rep not in self._species_feat)):
             return
         self._species_pending.add(rep)
         pool = self._species_now if urgent else self._species_bg
@@ -2806,6 +2858,7 @@ class PhotoReviewer(ctk.CTkToplevel):
         self._species_model = self._species_model or get_species_model()
         if self._species_model is None:
             return
+        self._learning.train_async(self._species_model)
         if self._species_bg is None:
             self._species_bg = ThreadPoolExecutor(max_workers=1)
         if self._current_path:
@@ -2818,13 +2871,18 @@ class PhotoReviewer(ctk.CTkToplevel):
         top = None
         if gen == self._session_gen:
             try:
-                img = load_preview(rep, 1600)          # enough detail for small birds
+                with background_read(rep):
+                    img = load_preview(rep, 1600)      # enough detail for small birds
+                    img.load()
                 a = main_animal(self._detections.get(rep))
                 # raw top 25; your confirmed species and the region are weighted in
-                # at display time
-                top = self._species_model.predict(img, a[2:6] if a else None, k=25)
+                # at display time (and what the AI learned from you, by the fingerprint)
+                feat = self._species_model.features(img, a[2:6] if a else None)
+                self._species_feat[rep] = feat
+                top = self._species_model.top(feat, k=25)
             except Exception as e:
                 log.debug("Species prediction failed %s: %s", rep, e)
+                self._species_feat[rep] = False
         self._species_q.put((gen, rep, top))
 
     def _drain_species(self) -> None:
@@ -2930,6 +2988,7 @@ class PhotoReviewer(ctk.CTkToplevel):
                                                               "species_sci": sci}))
         self._species_hist.confirm(name, sci)
         self._species_hist.save()
+        self._teach(paths, name, sci)
         if self._current_path:
             self._load_metadata_fields(self._current_path)
             self._update_name_panel(self._current_path)
@@ -3053,7 +3112,7 @@ class PhotoReviewer(ctk.CTkToplevel):
         if self.focus_get() is not self._name_region:
             c = by_iso(iso)
             self._name_region.set(c["name"] if c else "Worldwide")
-        self._region_lbl.configure(text=self._region_text())
+        self._region_lbl.configure(text=self._region_text() + "\n" + self._learning.summary())
         template = self._app_settings.get("best_template", DEFAULT_BEST_TEMPLATE)
         try:
             preview = self._render_name(template, parts, 1).replace("001", "###")
@@ -3074,6 +3133,18 @@ class PhotoReviewer(ctk.CTkToplevel):
                 out.append(ids)
         return out
 
+    def _teach(self, paths: list[str], species: str, sci: str, note: str = "") -> None:
+        """A species you confirmed: an example the AI learns from (one per burst)."""
+        if not sci or not paths:
+            return
+        reps = list(dict.fromkeys(self._burst_rep(p) for p in paths))[:10]
+        iso = self._folder_region()
+        for rep in reps:
+            try:
+                self._learning.add(rep, species, sci, iso, self._species_feat.get(rep) or None, note)
+            except Exception as e:
+                log.debug("Couldn't keep the example %s: %s", rep, e)
+
     def _set_id_result(self, group: list[str], state: str, species: Optional[str],
                        note: str) -> None:
         """Record an ID decision (and species) on every frame of a sighting."""
@@ -3085,6 +3156,7 @@ class PhotoReviewer(ctk.CTkToplevel):
             changes.update(species=species, species_sci=sci)
             self._species_hist.confirm(species, sci)
             self._species_hist.save()
+            self._teach(group, species, sci, note)
         self._run_batch(group, lambda p: self._set_fields(p, dict(changes)))
         if self._current_path in group:
             self._load_metadata_fields(self._current_path)
@@ -3295,7 +3367,8 @@ class PhotoReviewer(ctk.CTkToplevel):
                     for name in todo[i:i + 8]:
                         p = os.path.join(folder, name)
                         try:
-                            imgs.append(load_small_thumb(p, 384))
+                            with background_read(p):
+                                imgs.append(load_small_thumb(p, 384))
                             batch.append((name, os.path.getmtime(p)))
                         except Exception as e:
                             log.debug("Index: skipped %s: %s", p, e)
@@ -3675,7 +3748,9 @@ class PhotoReviewer(ctk.CTkToplevel):
                     and (det is None or p in dets):
                 continue
             try:
-                img = load_preview(p, SCORE_MIN_SIDE)
+                with background_read(p):
+                    img = load_preview(p, SCORE_MIN_SIDE)
+                    img.load()
                 if det is not None and p not in dets:
                     dets[p] = refine(det.detect(img), img, get_species_model())
                 if p not in focus:
@@ -3739,11 +3814,23 @@ class PhotoReviewer(ctk.CTkToplevel):
         self._detail_path: Optional[str] = None
         self._detail_q: queue.Queue = queue.Queue()
         self._detail_job: Optional[str] = None
+        self._detail_loading: Optional[str] = None
+        self._detail_then: Optional[tuple] = None        # (path, action once loaded)
+        # the photo on screen, when it wasn't preloaded: loaded off the window thread
+        self._show_executor = ThreadPoolExecutor(max_workers=1)
+        self._show_q: queue.Queue = queue.Queue()
+        self._show_pending: Optional[str] = None
+        self._pil_is_placeholder = False
+        self._ui_q: queue.Queue = queue.Queue()          # (function, args) to run on the window thread
 
     def _reset_background(self) -> None:
         """Forget per-folder image caches (folder switch)."""
         self._preload_cache.clear()
         self._preload_wanted = set()
+        self._show_pending = None
+        self._detail_loading = None
+        self._detail_then = None
+        self._pil_is_placeholder = False
         self._thumb_cache.clear()
         self._thumb_failed.clear()
         self._thumb_wanted_grid = set()
@@ -3751,6 +3838,12 @@ class PhotoReviewer(ctk.CTkToplevel):
         self._fs_photos.clear()
         self._detail_image = None
         self._detail_path = None
+
+    def _display_box(self) -> tuple[int, int]:
+        """(long, short) side the decode must cover to fill the canvas in either
+        orientation (the preview is decoded before it's turned upright)."""
+        cw, ch = self._canvas_w or 1200, self._canvas_h or 800
+        return max(cw, ch), min(cw, ch)
 
     def _display_min_side(self) -> int:
         """Decode size that still fills the canvas (either orientation)."""
@@ -3808,8 +3901,10 @@ class PhotoReviewer(ctk.CTkToplevel):
         try:
             # Skip work that went stale while queued (user moved on)
             if gen == self._session_gen and path in self._preload_wanted:
-                img = load_preview(path, self._display_min_side())
-                info = self._analyse(path, img)
+                with foreground_read():
+                    img = load_preview(path, self._display_min_side(), self._display_box())
+                    img.load()
+                    info = self._analyse(path, img)
                 result = (path, self._fit_to_canvas(img, in_place=True), *info)
         except Exception as e:
             log.debug("Preload failed %s: %s", path, e)
@@ -3820,9 +3915,10 @@ class PhotoReviewer(ctk.CTkToplevel):
         result = (path, None, None, None, None)
         try:
             if gen == self._session_gen:
-                if img is None:
-                    img = load_preview(path, SCORE_MIN_SIDE)
-                result = (path, None, *self._analyse(path, img))
+                with foreground_read():
+                    if img is None:
+                        img = load_preview(path, SCORE_MIN_SIDE)
+                    result = (path, None, *self._analyse(path, img))
         except Exception as e:
             log.debug("Analysis failed %s: %s", path, e)
         self._preload_q.put(result)
@@ -3851,7 +3947,8 @@ class PhotoReviewer(ctk.CTkToplevel):
                     with Image.open(off[0]) as im:
                         img = im.convert("RGB")
                 else:
-                    img = load_small_thumb(path)
+                    with foreground_read():
+                        img = load_small_thumb(path)
             except Exception as e:
                 log.debug("Thumbnail failed %s: %s", path, e)
                 img = None
@@ -3878,22 +3975,32 @@ class PhotoReviewer(ctk.CTkToplevel):
         img = None
         if gen == self._session_gen and self._current_path == path:
             try:
-                img = _extract_thumb_img(path)
-                img.load()
+                with foreground_read():
+                    img = _extract_thumb_img(path)
+                    img.load()
             except Exception as e:
                 log.debug("Detail load failed %s: %s", path, e)
                 img = None
         self._detail_q.put((path, img))
 
-    def _ensure_detail_now(self) -> None:
-        """Load the full-resolution preview immediately (1:1 key, loupe)."""
+    def _ensure_detail_now(self, then=None) -> bool:
+        """
+        True if the full-resolution preview of the photo on screen is loaded.
+        Otherwise start loading it (on a worker thread, ahead of background work)
+        and, if `then` is given, run it once the image is there.
+        """
         path = self._current_path
-        if path and self._detail_path != path:
-            try:
-                self._detail_image = _extract_thumb_img(path)
-                self._detail_path = path
-            except Exception as e:
-                log.debug("Detail load failed %s: %s", path, e)
+        if not path:
+            return False
+        if self._detail_path == path and self._detail_image is not None:
+            return True
+        if then is not None:
+            self._detail_then = (path, then)
+            self._flash_title("Loading full resolution…", 1500)
+        if self._detail_loading != path:
+            self._detail_loading = path
+            self._detail_executor.submit(self._detail_worker, path, self._session_gen)
+        return False
 
     def _poll_background(self) -> None:
         """Main-thread poll: hand worker results to the UI."""
@@ -3920,6 +4027,9 @@ class PhotoReviewer(ctk.CTkToplevel):
             if presized is not None and path in self._preload_wanted:
                 self._preload_cache[path] = presized
                 strip_dirty = True
+                if path == current and self._pil_is_placeholder:
+                    self._pil_image, self._pil_is_placeholder = presized, False
+                    self._render_image()
             if exif is not None:
                 self._exif_cache[path] = exif
             if score is not None and (self._scores.get(path) or {}).get("v") != SCORE_VERSION:
@@ -3953,9 +4063,15 @@ class PhotoReviewer(ctk.CTkToplevel):
                 path, img = self._detail_q.get_nowait()
             except queue.Empty:
                 break
+            if self._detail_loading == path:
+                self._detail_loading = None
             if path == current and img is not None:
                 self._detail_image, self._detail_path = img, path
-                if self._zoom > 1.01:
+                then = self._detail_then
+                self._detail_then = None
+                if then is not None and then[0] == path:
+                    then[1]()                       # the zoom that was waiting for it
+                elif self._zoom > 1.01:
                     self._render_image()
 
         analysed = False
@@ -4003,6 +4119,16 @@ class PhotoReviewer(ctk.CTkToplevel):
                 if self._overlay_view is not None and hasattr(self._overlay_view, "_relayout"):
                     self._overlay_view._relayout(keep_scroll=True)   # show new notes
 
+        self._drain_show()
+        while True:                               # results handed back by worker threads
+            try:
+                fn, args = self._ui_q.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                fn(*args)
+            except Exception as e:
+                log.debug("UI callback failed: %s", e)
         self._drain_clip_masks()
         self._drain_eyes()
         self._drain_rawclip()
@@ -4197,9 +4323,7 @@ class PhotoReviewer(ctk.CTkToplevel):
         self._save_scores_if_dirty()
         if self._hash_done < self._hash_total_needed:
             self._save_hash_progress()
-        if self._species_dirty:
-            save_predictions(self.base_dir, self._species_pred)
-            self._species_dirty = False
+        self._flush_writes()                     # all on disk before the folder is renamed
         if self._compare_mode:
             self._exit_compare_mode()
         self._hide_overlay()
@@ -4538,6 +4662,7 @@ class PhotoReviewer(ctk.CTkToplevel):
                 self._header_toggle_btns[b] = overlay_name
             return b
 
+        _wf_btn("⇥ Resume  R",     self._jump_to_furthest_tagged, None,           92)
         _wf_btn("⊞ Gallery  G",    self._open_gallery,         "gallery",        96)
         _wf_btn("⊟ Compare  C",    self._open_comparison,      None,             96)
         tk.Frame(wf, bg=C_BORDER, width=1).pack(side="left", fill="y", pady=6)
@@ -4923,7 +5048,7 @@ class PhotoReviewer(ctk.CTkToplevel):
             if self._name_date.get().strip() != self._name_parts(self._current_path)["date"]:
                 self._confirm_date(self._name_date.get())
             return "break"
-        self._name_date.bind("<Return>", lambda e: (commit_date(), self._canvas.focus_set()))
+        self._name_date.bind("<Return>", lambda e: (commit_date(), self._canvas.focus_set(), "break")[2])
         self._name_date.bind("<FocusOut>", commit_date)
 
         # ── Suggestions (from animal detection + focus point) ─────────────────
@@ -5065,31 +5190,28 @@ class PhotoReviewer(ctk.CTkToplevel):
         cached = self._preload_cache.get(path)
         if cached is not None:
             self._pil_image = cached
+            self._pil_is_placeholder = False
         else:
-            try:
-                small = load_preview(path, self._display_min_side())
-                self._pil_image = self._fit_to_canvas(small)
-                self._preload_cache[path] = self._pil_image
-                if path not in self._exif_cache or path not in self._scores \
-                        or path not in self._histograms:
-                    self._request_info(path, small)
-            except Exception as e:
-                self._pil_image = None
-                self._canvas.delete("all")
-                cw = self._canvas_w or 800
-                ch = self._canvas_h or 600
-                self._canvas.create_text(cw / 2, ch / 2,
-                                         text=f"Cannot load image\n{e}",
-                                         fill=C_MUTED, font=("Helvetica", 11),
-                                         justify="center")
+            # Not preloaded (a jump, or the drive is busy): show the thumbnail now and
+            # load the photo on a worker thread; it replaces the thumbnail when ready.
+            thumb = self._thumb_cache.get(path)
+            self._pil_image = self._fit_to_canvas(thumb) if thumb is not None else None
+            self._pil_is_placeholder = True
+            if self._show_pending != path:
+                self._show_pending = path
+                self._show_executor.submit(self._show_worker, path, self._session_gen)
 
         self._zoom = 1.0; self._pan_x = 0.0; self._pan_y = 0.0
         if self._lanczos_job:
             self.after_cancel(self._lanczos_job)
             self._lanczos_job = None
-        self._render_image()
+        if self._pil_image is None:
+            self._canvas_message("Loading…")
+        else:
+            self._render_image()
 
-        self._schedule_preload()
+        if not self._pil_is_placeholder:            # else: after this photo is in (_drain_show)
+            self._schedule_preload()
         self._schedule_detail()
         self._eye_view = False
         self._request_eye(path, urgent=True)
@@ -5100,6 +5222,56 @@ class PhotoReviewer(ctk.CTkToplevel):
         self._refresh_burst_ui(path)
         self._refresh_sidebar(path)
         self._refresh_filmstrip(self.index)
+
+    def _canvas_message(self, text: str) -> None:
+        self._canvas.delete("all")
+        cw = self._canvas_w or 800
+        ch = self._canvas_h or 600
+        self._canvas.create_text(cw / 2, ch / 2, text=text, fill=C_MUTED,
+                                 font=("Helvetica", 11), justify="center")
+
+    def _show_worker(self, path: str, gen: int) -> None:
+        """Thread: load the photo on screen (it wasn't preloaded)."""
+        result = (gen, path, None, None, None)
+        if gen == self._session_gen and path == self._current_path:
+            try:
+                with foreground_read():
+                    small = load_preview(path, self._display_min_side(), self._display_box())
+                    small.load()
+                result = (gen, path, self._fit_to_canvas(small), small, None)
+            except Exception as e:
+                result = (gen, path, None, None, e)
+        self._show_q.put(result)
+
+    def _drain_show(self) -> None:
+        while True:
+            try:
+                gen, path, fitted, small, err = self._show_q.get_nowait()
+            except queue.Empty:
+                return
+            if self._show_pending == path:
+                self._show_pending = None
+            if gen != self._session_gen:
+                continue
+            if fitted is not None:
+                self._preload_cache[path] = fitted
+            if path != self._current_path or not self._pil_is_placeholder:
+                continue
+            if err is not None:
+                self._pil_image = None
+                self._canvas_message(f"Cannot load image\n{err}")
+                continue
+            if fitted is None:                    # skipped (moved on meanwhile): try again
+                self._show_pending = path
+                self._show_executor.submit(self._show_worker, path, self._session_gen)
+                continue
+            self._pil_image, self._pil_is_placeholder = fitted, False
+            self._render_image()
+            self._schedule_preload()                    # now the neighbours
+            self.after(50, self._start_hash_once)       # first photo is up: prepare the folder
+            if path not in self._exif_cache or path not in self._scores \
+                    or path not in self._histograms:
+                self._request_info(path, small)
 
     def _display_source(self) -> Image.Image:
         """Full-resolution preview when zoomed in (if loaded), else the fit copy."""
@@ -5372,8 +5544,17 @@ class PhotoReviewer(ctk.CTkToplevel):
 
     def _request_rawclip(self, path: Optional[str], urgent: bool = False) -> None:
         """Queue reading a RAW file's highlight clipping (once it is scored and,
-        with animal detection on, its animal is known)."""
+        with animal detection on, its animal is known).
+
+        It reads the whole NEF. On an external drive that is ~1 s of drive time per
+        photo for every frame, which starves the viewer and Process, so there only
+        the photo on screen and Best-tagged photos are read in the background
+        (setting "raw_clip_external": "all" reads every frame)."""
         if not path or path not in self.status or os.path.splitext(path)[1].lower() not in RAW_EXTS:
+            return
+        if not urgent and slow_drive(path) \
+                and self._app_settings.get("raw_clip_external", "viewed") != "all" \
+                and not self.status.get(path, {}).get("best"):
             return
         sc = self._scores.get(path)
         if not sc or "raw" in sc:
@@ -5469,7 +5650,8 @@ class PhotoReviewer(ctk.CTkToplevel):
         def work():
             got = None
             try:
-                got = raw_clip_mask(path)
+                with foreground_read():
+                    got = raw_clip_mask(path)
             except Exception as e:
                 log.debug("Clip mask failed %s: %s", path, e)
             self._clip_mask_q.put((gen, path, got[0] if got else None))
@@ -5572,7 +5754,8 @@ class PhotoReviewer(ctk.CTkToplevel):
             self._pan_x = self._pan_y = 0.0
             self._render_image()
             return
-        self._ensure_detail_now()
+        if not self._ensure_detail_now(then=self._zoom_to_100):
+            return                                   # zooms when the full image is in
         cw = self._canvas_w or 1200
         ch = self._canvas_h or 800
         iw, ih = self._full_res_size()
@@ -5796,24 +5979,30 @@ class PhotoReviewer(ctk.CTkToplevel):
         self._score_save_job = self.after(5000, self._save_scores_if_dirty)
 
     def _save_scores_if_dirty(self) -> None:
+        """Queue the changed caches for the writer thread (a slow drive can take
+        seconds to write them; the window must not wait)."""
         self._score_save_job = None
         if self._scores_dirty:
-            save_score_cache(self.score_file, self._scores)
+            self._queue_job(("scores", self.score_file), save_score_cache, self.score_file,
+                            {p: dict(v) for p, v in self._scores.items()})
             self._scores_dirty = False
         if self._dets_dirty:
-            save_detections(self.detect_file, self._detections, MODEL_ID)
+            self._queue_job(("detections", self.detect_file), save_detections, self.detect_file,
+                            dict(self._detections), MODEL_ID)
             self._dets_dirty = False
         if self._emb_dirty:
-            save_features(self.base_dir, self._emb)
+            self._queue_job(("features", self.base_dir), save_features, self.base_dir, dict(self._emb))
             self._emb_dirty = False
         if self._species_dirty:
-            save_predictions(self.base_dir, self._species_pred)
+            self._queue_job(("species", self.base_dir), save_predictions, self.base_dir,
+                            dict(self._species_pred))
             self._species_dirty = False
         if self._clip_dirty:
-            save_index(self.base_dir, self._clip)
+            self._queue_job(("clip", self.base_dir), save_index, self.base_dir, dict(self._clip))
             self._clip_dirty = False
         if self._eyes_dirty:
-            save_eyes(self.base_dir, self._eyes)
+            self._queue_job(("eyes", self.base_dir), save_eyes, self.base_dir,
+                            {p: dict(v) for p, v in self._eyes.items()})
             self._eyes_dirty = False
 
     def _update_counts(self) -> None:
@@ -5859,7 +6048,7 @@ class PhotoReviewer(ctk.CTkToplevel):
             return None
         if self._busy:
             return "break"
-        if self._typing_in_field():
+        if self._typing_in_field() or (_event is not None and self._key_in_field(_event)):
             return None
         view = self._overlay_view if self._active_overlay else None
         if view is not None and hasattr(view, "handle_tab"):
@@ -5876,8 +6065,50 @@ class PhotoReviewer(ctk.CTkToplevel):
         except Exception:
             return False
 
+    _FIELD_CLASSES = ("Entry", "Text", "TEntry", "TCombobox", "Spinbox", "TSpinbox", "Listbox")
+    # number pad → the same moves as the arrow keys / Page Up / Page Down / Home / End
+    _NUMPAD = {"KP_Left": "Left", "KP_4": "Left", "KP_Right": "Right", "KP_6": "Right",
+               "KP_Up": "Up", "KP_8": "Up", "KP_Down": "Down", "KP_2": "Down",
+               "KP_Prior": "Prior", "KP_9": "Prior", "KP_Next": "Next", "KP_3": "Next",
+               "KP_Home": "Home", "KP_7": "Home", "KP_End": "End", "KP_1": "End"}
+
+    def _release_field_focus(self) -> None:
+        """Take the keyboard focus off a text box so keys drive the app again."""
+        try:
+            self.focus_set()
+        except tk.TclError:
+            pass
+
+    def _click_takes_focus(self, event) -> None:
+        """A click outside any text box in this window ends typing."""
+        try:
+            w = event.widget
+            if not isinstance(w, tk.Misc) or w.winfo_toplevel() is not self:
+                return                         # other windows, combobox drop-downs
+            if w.winfo_class() not in self._FIELD_CLASSES and self._typing_in_field():
+                self._release_field_focus()
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _key_in_field(self, event) -> bool:
+        """The key was typed in a text box (even if that box has just handed the
+        focus back, e.g. Enter in a name box must not also tag Best)."""
+        if self._typing_in_field():
+            return True
+        try:
+            w = event.widget
+            return isinstance(w, tk.Misc) and w.winfo_class() in self._FIELD_CLASSES
+        except (tk.TclError, AttributeError):
+            return False
+
     def _on_key(self, event) -> None:
-        if self._busy or self._typing_in_field() or self._from_import_window(event):
+        if self._from_import_window(event):
+            return
+        if self._key_in_field(event):
+            if event.keysym == "Escape":       # Escape leaves the text box
+                self._release_field_focus()
+            return
+        if self._busy:
             return
         ks    = event.keysym
         ctrl  = bool(event.state & 0x4)
@@ -5888,7 +6119,11 @@ class PhotoReviewer(ctk.CTkToplevel):
             return
         if view is not None and hasattr(view, "handle_key"):
             # Grid views (gallery, scoring, bursts) handle arrows, tags, stars
-            if view.handle_key(ks, ctrl, shift):
+            if isinstance(view, ThumbnailGrid):
+                vk = self._NUMPAD.get(ks, ks)          # numpad moves through the grid
+            else:
+                vk = ks[3:] if ks in ("KP_1", "KP_2", "KP_3", "KP_4", "KP_5") else ks
+            if view.handle_key(vk, ctrl, shift):       # (ID Review: numpad 1–5 pick)
                 return
             if ks == "Escape":
                 self._hide_overlay()
@@ -5920,6 +6155,7 @@ class PhotoReviewer(ctk.CTkToplevel):
         elif ks in ("l", "L"):                            self._toggle_loupe()
         elif ks in ("p", "P"):                            self._toggle_boxes()
         elif ks in ("k", "K"):                            self._jump_to_pick()
+        elif ks in ("r", "R"):                            self._jump_to_furthest_tagged()
         elif ks in ("n", "N"):                            self._confirm_suggested_species()
         elif ks in ("question", "slash"):                 self._toggle_shortcuts_overlay()
         elif ks == "Escape":
@@ -5969,8 +6205,10 @@ class PhotoReviewer(ctk.CTkToplevel):
         if "best" in old or "delete" in old:
             self._history_dirty = True
             self._schedule_retrain()
+            if entry.get("best"):
+                self._request_rawclip(path)          # Best photos get raw clipping anywhere
         self._schedule_status_save()
-        write_xmp_sidecar(path, entry)
+        self._queue_xmp(path, entry)
 
     def _run_batch(self, paths: list[str], change) -> None:
         """Apply change(path) to several images as ONE undo step."""
@@ -6056,7 +6294,7 @@ class PhotoReviewer(ctk.CTkToplevel):
                     entry.pop(key, None)
                 else:
                     entry[key] = value
-            write_xmp_sidecar(path, entry)
+            self._queue_xmp(path, entry)
             paths.append(path)
         self._schedule_status_save()
         self._after_many(paths)
@@ -6073,15 +6311,74 @@ class PhotoReviewer(ctk.CTkToplevel):
         """Write the session file shortly after the last change."""
         if self._status_save_job:
             self.after_cancel(self._status_save_job)
-        self._status_save_job = self.after(STATUS_SAVE_DELAY_MS, self._save_status_now)
+        self._status_save_job = self.after(STATUS_SAVE_DELAY_MS, self._queue_status_save)
 
-    def _save_status_now(self) -> None:
-        """Write the session file now (also used before switching or closing)."""
+    def _queue_status_save(self) -> None:
+        """Hand a copy of the session to the writer thread (returns at once)."""
         if self._status_save_job:
             self.after_cancel(self._status_save_job)
             self._status_save_job = None
-        save_status(self.status_file, self.status, backup=not self._status_backed_up)
+        snapshot = {p: dict(v) for p, v in self.status.items()}
+        with self._w_cv:
+            self._w_status = (self.status_file, snapshot, not self._status_backed_up)
+            self._w_cv.notify_all()
         self._status_backed_up = True
+
+    def _save_status_now(self) -> None:
+        """Write the session file now and wait until it (and every pending
+        sidecar) is on disk: used before switching, renaming, processing, closing."""
+        self._queue_status_save()
+        self._flush_writes()
+
+    def _queue_xmp(self, path: str, entry: dict) -> None:
+        """Write this photo's sidecar soon, on the writer thread (latest tags win)."""
+        with self._w_cv:
+            self._w_xmp[path] = {k: (list(v) if isinstance(v, list) else v)
+                                 for k, v in entry.items()}
+            self._w_cv.notify_all()
+
+    def _queue_job(self, key, fn, *args) -> None:
+        """Run a save on the writer thread; a newer job with the same key replaces it."""
+        with self._w_cv:
+            self._w_jobs[key] = (fn, args)
+            self._w_cv.notify_all()
+
+    def _flush_writes(self, timeout: float = 120.0) -> bool:
+        """Wait until the writer thread has written everything queued."""
+        with self._w_cv:
+            return self._w_cv.wait_for(
+                lambda: not self._w_xmp and self._w_status is None and not self._w_jobs
+                and not self._w_busy, timeout)
+
+    def _writer_loop(self) -> None:
+        """Thread: write sidecars and the session file, ahead of background reads."""
+        while True:
+            with self._w_cv:
+                self._w_cv.wait_for(lambda: self._w_xmp or self._w_status is not None or self._w_jobs)
+                xmp, self._w_xmp = self._w_xmp, {}
+                status, self._w_status = self._w_status, None
+                jobs, self._w_jobs = self._w_jobs, {}
+                self._w_busy = True
+            try:
+                with foreground_read():          # background reads on the drive wait
+                    for path, tags in xmp.items():
+                        try:
+                            write_xmp_sidecar(path, tags)
+                        except Exception as e:
+                            log.warning("Sidecar not written for %s: %s", path, e)
+                    if status is not None:
+                        save_status(status[0], status[1], backup=status[2])
+                    for key, (fn, args) in jobs.items():
+                        try:
+                            fn(*args)
+                        except Exception as e:
+                            log.warning("Saving %s failed: %s", key[0], e)
+            except Exception as e:
+                log.error("Saving failed: %s", e)
+            finally:
+                with self._w_cv:
+                    self._w_busy = False
+                    self._w_cv.notify_all()
 
     def _after_tag_change(self, path: str) -> None:
         """Refresh everything that displays tags after `path` changed."""
@@ -6227,6 +6524,7 @@ class PhotoReviewer(ctk.CTkToplevel):
         self._overlay_frame.grid_remove()
         for w in self._overlay_frame.winfo_children():
             w.destroy()
+        self._release_field_focus()
         if not self._compare_mode:
             self._canvas.grid(row=0, column=0, sticky="nsew")
         self._update_header_buttons()
@@ -6319,6 +6617,19 @@ class PhotoReviewer(ctk.CTkToplevel):
         if self._multi_pass_on and not quiet:
             self._flash_title("No more images in this pass", 1500)
         return False
+
+    def _jump_to_furthest_tagged(self) -> None:
+        """R / ⇥ Resume: the furthest photo (in folder order) with a tag or rating,
+        so a session closed part-way can carry on from where you got to."""
+        for idx in range(self.total - 1, -1, -1):
+            if is_reviewed(self.status.get(self.files[idx], {})):
+                if self._active_overlay:
+                    self._hide_overlay()
+                self._jump_to_index(idx)
+                self._flash_title(f"Furthest tagged: {Path(self.files[idx]).name}  "
+                                  f"({idx + 1} of {self.total}) — → to carry on", 3000)
+                return
+        self._flash_title("Nothing tagged in this folder yet", 2000)
 
     def _jump_to_next_unreviewed(self) -> None:
         """Jump to the next image with no tag and no star rating (wraps)."""
@@ -6496,11 +6807,30 @@ class PhotoReviewer(ctk.CTkToplevel):
 
         return panel
 
-    def _render_compare_image(self, path: str, canvas: tk.Canvas) -> None:
-        """Render image into a compare panel canvas."""
+    def _render_compare_image(self, path: str, canvas: tk.Canvas, img=None) -> None:
+        """Render image into a compare panel canvas (loading it on a worker thread
+        if it isn't preloaded)."""
         canvas.unbind("<Configure>")
         try:
-            img = self._preload_cache.get(path) or _extract_thumb_img(path)
+            if not canvas.winfo_exists():
+                return
+            img = img or self._preload_cache.get(path)
+            if img is None:
+                side = max(canvas.winfo_width(), canvas.winfo_height(), 400)
+
+                def load():
+                    try:
+                        with foreground_read():
+                            im = load_preview(path, side)
+                            im.load()
+                        self._ui_q.put((self._render_compare_image, (path, canvas, im)))
+                    except Exception as e:
+                        log.warning("Compare load failed %s: %s", path, e)
+                canvas.create_text(canvas.winfo_width() // 2, canvas.winfo_height() // 2,
+                                   text="Loading…", fill=C_MUTED)
+                self._show_executor.submit(load)
+                return
+            canvas.delete("all")
             cw  = canvas.winfo_width()
             ch  = canvas.winfo_height()
             if cw < 10 or ch < 10:
@@ -6646,9 +6976,15 @@ class PhotoReviewer(ctk.CTkToplevel):
         if not choice:
             return
         template = choice.get("template") if choice.get("rename") else None
+        approved = choice.get("approved", set(to_best))
 
         best_dir = os.path.join(self.base_dir, "Best")
-        best_names = self._plan_best_names(to_best, template)
+        # approved photos get the pattern (numbered among themselves); the rest keep
+        # their original names
+        best_names = self._plan_best_names([p for p in to_best if p in approved], template) \
+            if template else {}
+        for p in to_best:
+            best_names.setdefault(p, Path(p).stem)
         id_dir   = os.path.join(self.base_dir, "ID")
         os.makedirs(best_dir, exist_ok=True)
         os.makedirs(id_dir,   exist_ok=True)
@@ -6682,6 +7018,10 @@ class PhotoReviewer(ctk.CTkToplevel):
         done_q: queue.Queue = queue.Queue()
 
         def work() -> None:                     # thread: copies + JPEG conversion
+            with hold_background():             # background passes wait until it's done
+                _work()
+
+        def _work() -> None:
             for kind, p in jobs:
                 name = Path(p).name
                 try:
@@ -6700,6 +7040,32 @@ class PhotoReviewer(ctk.CTkToplevel):
                 except Exception as e:
                     log.error("Process failed %s: %s", p, e)
                     done_q.put(("error", name, e))
+            # Recycle Bin: one shell operation per batch (each file and its sidecar),
+            # here rather than on the window thread — on a USB drive it can take seconds
+            for i in range(0, len(to_delete), 25):
+                batch = to_delete[i:i + 25]
+                items = []
+                for p in batch:
+                    items.append(p)
+                    xmp = _xmp_path_for(p)
+                    if xmp is not None and xmp.exists():
+                        items.append(str(xmp))     # don't leave orphaned sidecars
+                try:
+                    send2trash(items)
+                    for p in batch:
+                        done_q.put(("trashed", Path(p).name, None))
+                except Exception:
+                    for p in batch:                # find which file failed
+                        try:
+                            if os.path.exists(p):
+                                send2trash(p)
+                            xmp = _xmp_path_for(p)
+                            if xmp is not None and xmp.exists():
+                                send2trash(str(xmp))
+                            done_q.put(("trashed", Path(p).name, None))
+                        except Exception as e:
+                            log.error("Trash failed %s: %s", p, e)
+                            done_q.put(("error", Path(p).name, e))
             done_q.put(("end", "", None))
 
         self._busy = True
@@ -6727,26 +7093,9 @@ class PhotoReviewer(ctk.CTkToplevel):
                 else:
                     report[kind] += 1
             if state["copying"]:
-                progress("Copying and converting…")
+                progress("Copying and converting…" if state["done"] < len(jobs)
+                         else "Moving to Recycle Bin…")
                 self.after(100, poll)
-                return
-            # Recycle Bin moves run here on the main thread, a few per tick
-            i = state["trash_i"]
-            for p in to_delete[i:i + 5]:
-                try:
-                    xmp = _xmp_path_for(p)
-                    send2trash(p)
-                    report["trashed"] += 1
-                    if xmp is not None and xmp.exists():
-                        send2trash(str(xmp))     # don't leave orphaned sidecars
-                except Exception as e:
-                    log.error("Trash failed %s: %s", p, e)
-                    report["errors"].append(Path(p).name)
-                state["done"] += 1
-            state["trash_i"] = i + 5
-            if state["trash_i"] < len(to_delete):
-                progress("Moving to Recycle Bin…")
-                self.after(10, poll)
                 return
             finish()
 
@@ -6763,8 +7112,9 @@ class PhotoReviewer(ctk.CTkToplevel):
                     self.status.pop(p, None)
                     self._scores.pop(p, None)
                     self._histograms.pop(p, None)
-            self._save_status_now()
-            save_score_cache(self.score_file, self._scores)
+            self._scores_dirty = True
+            self._save_scores_if_dirty()              # (writer thread)
+            self._save_status_now()                   # waits for both
             self._busy = False
             text = "Process complete.\n\n"
             if report["copied"]:    text += f"Copied to Best/    : {report['copied']}\n"
@@ -6856,10 +7206,13 @@ class PhotoReviewer(ctk.CTkToplevel):
         return plan
 
     def _process_dialog(self, summary: str, to_best: list[str]) -> Optional[dict]:
-        """Confirm Process; optionally rename the Best copies. None = cancel."""
+        """
+        Confirm Process; optionally rename the Best copies. Every planned name is
+        listed with a tick: untick a photo to keep its original name. None = cancel.
+        """
         dlg = ctk.CTkToplevel(self)
         dlg.title("Process")
-        dlg.geometry("620x520")
+        dlg.geometry("880x700")
         dlg.configure(fg_color=C_SURFACE)
         dlg.transient(self)
         dlg.grab_set()
@@ -6867,48 +7220,131 @@ class PhotoReviewer(ctk.CTkToplevel):
         rename = tk.BooleanVar(value=bool(self._app_settings.get("best_rename", False)))
         template = tk.StringVar(value=self._app_settings.get("best_template",
                                                              DEFAULT_BEST_TEMPLATE))
+        approved: set[str] = set(to_best)
         ctk.CTkLabel(dlg, text=summary, justify="left", anchor="w",
-                     font=ctk.CTkFont("Courier", 11)).pack(fill="x", padx=20, pady=(16, 8))
+                     font=ctk.CTkFont("Courier", 11)).pack(fill="x", padx=20, pady=(14, 6))
         ctk.CTkCheckBox(dlg, text="Rename the copies in Best/ (originals keep their names)",
-                        variable=rename).pack(anchor="w", padx=20, pady=(8, 4))
+                        variable=rename).pack(anchor="w", padx=20, pady=(6, 4))
         ctk.CTkEntry(dlg, textvariable=template).pack(fill="x", padx=20)
         ctk.CTkLabel(dlg, text="Fields: {species} {date} {location} {n} {time} {orig}.  "
-                     "Location defaults to the folder label; set species/location for "
-                     "many images with the gallery selection bar.",
-                     wraplength=570, justify="left", text_color=C_MUTED,
+                     "Untick a photo below to keep its original name.  Click a row (or select "
+                     "it and press Space) to tick / untick.",
+                     wraplength=830, justify="left", text_color=C_MUTED,
                      font=ctk.CTkFont("Helvetica", 10)).pack(fill="x", padx=20, pady=4)
-        preview = ctk.CTkLabel(dlg, text="", justify="left", anchor="w",
-                               font=ctk.CTkFont("Courier", 10))
-        preview.pack(fill="x", padx=20, pady=6)
+
+        bar = ctk.CTkFrame(dlg, fg_color="transparent")
+        bar.pack(fill="x", padx=20)
+        counts = ctk.CTkLabel(bar, text="", anchor="w", font=ctk.CTkFont("Helvetica", 10, "bold"))
+        counts.pack(side="left")
+
+        style = ttk.Style(dlg)
+        style.configure("Rename.Treeview", background=C_BG, fieldbackground=C_BG,
+                        foreground=C_TEXT, rowheight=20, borderwidth=0)
+        style.configure("Rename.Treeview.Heading", background=C_BORDER, foreground=C_TEXT)
+        style.map("Rename.Treeview", background=[("selected", C_ACCENT)])
+        box = tk.Frame(dlg, bg=C_BG)
+        box.pack(fill="both", expand=True, padx=20, pady=6)
+        tree = ttk.Treeview(box, columns=("ok", "orig", "new", "note"), show="headings",
+                            style="Rename.Treeview", selectmode="extended")
+        for col, title, w in (("ok", "✓", 34), ("orig", "Original", 150),
+                              ("new", "Best copy will be named", 400), ("note", "", 230)):
+            tree.heading(col, text=title)
+            tree.column(col, width=w, stretch=(col == "new"), anchor="w")
+        tree.tag_configure("off", foreground=C_MUTED)
+        tree.tag_configure("guess", foreground=C_WARN)
+        tree.tag_configure("unknown", foreground=C_DELETE)
+        sb = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        iid_of = {p: f"r{i}" for i, p in enumerate(to_best)}
+        path_of = {v: k for k, v in iid_of.items()}
+        for p in to_best:
+            tree.insert("", "end", iid=iid_of[p], values=("", Path(p).name, "", ""))
+
+        def species_note(p: str) -> tuple[str, str]:
+            if self.status.get(p, {}).get("species"):
+                return "", ""
+            if self._species_top(p):
+                return "species not confirmed (suggestion)", "guess"
+            return "no species → Unidentified", "unknown"
 
         def update(*_):
             if not rename.get():
-                preview.configure(text="Copies keep their original names.")
+                for p in to_best:
+                    tree.item(iid_of[p], values=("–", Path(p).name, Path(p).name, ""), tags=("off",))
+                counts.configure(text="Renaming is off: every copy keeps its original name.")
                 return
             try:
-                plan = self._plan_best_names(to_best[:200], template.get())
+                plan = self._plan_best_names([p for p in to_best if p in approved], template.get())
             except (KeyError, ValueError, IndexError) as e:
-                preview.configure(text=f"⚠ Template problem: {e}")
+                counts.configure(text=f"⚠ Name pattern problem: {e}")
                 return
-            lines = [f"{Path(p).name}  →  {plan[p]}{Path(p).suffix}" for p in to_best[:5]]
-            unconfirmed = [p for p in to_best if not self.status.get(p, {}).get("species")]
-            guessed = sum(1 for p in unconfirmed if self._species_top(p))
-            if guessed:
-                lines.append(f"⚠ {guessed} image(s) named from an unconfirmed species suggestion")
-            if len(unconfirmed) - guessed:
-                lines.append(f"⚠ {len(unconfirmed) - guessed} image(s) have no species → 'Unidentified'")
-            preview.configure(text="\n".join(lines) or "Nothing to copy to Best/.")
+            n_guess = n_unknown = 0
+            for p in to_best:
+                if p in approved:
+                    note, tag = species_note(p)
+                    n_guess += tag == "guess"
+                    n_unknown += tag == "unknown"
+                    tree.item(iid_of[p], values=("✓", Path(p).name, plan[p] + Path(p).suffix, note),
+                              tags=(tag,) if tag else ())
+                else:
+                    tree.item(iid_of[p], values=("✗", Path(p).name, Path(p).name,
+                                                 "keeps its original name"), tags=("off",))
+            msg = f"{len(approved & set(to_best))} of {len(to_best)} will be renamed"
+            if n_guess:
+                msg += f"  ·  ⚠ {n_guess} from an unconfirmed species suggestion"
+            if n_unknown:
+                msg += f"  ·  ⚠ {n_unknown} Unidentified"
+            counts.configure(text=msg)
+
+        def pair(p: str) -> list[str]:
+            """A RAW+JPEG pair is ticked / unticked together (they share a name)."""
+            stem = Path(p).stem.lower()
+            return [q for q in to_best if Path(q).stem.lower() == stem]
+
+        def toggle(paths: list[str]) -> None:
+            if not rename.get() or not paths:
+                return
+            on = not all(p in approved for p in paths)
+            for p in paths:
+                for q in pair(p):
+                    (approved.add if on else approved.discard)(q)
+            update()
+
+        def on_click(e):
+            if tree.identify_region(e.x, e.y) != "cell":
+                return
+            row = tree.identify_row(e.y)
+            if row and not (e.state & 0x5):               # plain click; Shift / Ctrl select
+                toggle([path_of[row]])
+
+        tree.bind("<ButtonRelease-1>", on_click)
+        tree.bind("<space>", lambda e: (toggle([path_of[i] for i in tree.selection()]), "break")[1])
+
+        def set_all(rule) -> None:
+            approved.clear()
+            approved.update(p for p in to_best if rule(p))
+            update()
+        for text, rule in (("Tick all", lambda p: True), ("Untick all", lambda p: False),
+                           ("Only confirmed species",
+                            lambda p: bool(self.status.get(p, {}).get("species")))):
+            ctk.CTkButton(bar, text=text, width=10, height=24, fg_color=C_BORDER,
+                          font=ctk.CTkFont("Helvetica", 10),
+                          command=lambda r=rule: set_all(r)).pack(side="right", padx=3)
+
         rename.trace_add("write", update)
         template.trace_add("write", update)
         update()
 
         def ok():
-            result.update(rename=bool(rename.get()), template=template.get())
+            result.update(rename=bool(rename.get()), template=template.get(),
+                          approved=set(approved))
             self._app_settings.update(best_rename=result["rename"], best_template=result["template"])
             save_app_settings(self._app_settings)
             dlg.destroy()
         row = ctk.CTkFrame(dlg, fg_color="transparent")
-        row.pack(fill="x", padx=20, pady=16, side="bottom")
+        row.pack(fill="x", padx=20, pady=12, side="bottom")
         ctk.CTkButton(row, text="Process", command=ok).pack(side="right")
         ctk.CTkButton(row, text="Cancel", fg_color=C_BORDER,
                       command=dlg.destroy).pack(side="right", padx=8)
@@ -6950,6 +7386,7 @@ class PhotoReviewer(ctk.CTkToplevel):
             self._save_scores_if_dirty()
             if self._hash_done < self._hash_total_needed:
                 self._save_hash_progress()
+            self._flush_writes()
         if self._compare_mode:
             self._exit_compare_mode()
         self._hide_overlay()
@@ -7003,6 +7440,7 @@ class PhotoReviewer(ctk.CTkToplevel):
             if self._hash_done < self._hash_total_needed:
                 self._save_hash_progress()
             self._save_folder_history()
+            self._flush_writes()                 # everything on disk before closing
         except Exception as e:
             log.error("Saving on close failed: %s", e)
         self._learn_stop.set()
@@ -7011,7 +7449,7 @@ class PhotoReviewer(ctk.CTkToplevel):
         for ex in (self._executor, self._preload_executor, self._analysis_executor,
                    self._thumb_executor, self._detail_executor, self._species_bg,
                    self._species_now, self._eye_bg, self._eye_now,
-                   self._rawclip_bg, self._rawclip_now):
+                   self._rawclip_bg, self._rawclip_now, self._show_executor):
             if ex:
                 ex.shutdown(wait=False, cancel_futures=True)
 
@@ -7089,6 +7527,7 @@ class PhotoReviewer(ctk.CTkToplevel):
             ("← / →",           "Previous / Next image",                 "Navigation"),
             ("Numpad 4 / 6",    "Previous / Next image",                 "Navigation"),
             ("Tab",             "Jump to next unreviewed image",          "Navigation"),
+            ("R  / ⇥ Resume",   "Jump to the furthest tagged image",      "Navigation"),
             ("G  / Gallery ⊞",  "Open/close gallery",                    "Navigation"),
             ("Z  / 1:1 button", "Toggle 100 % zoom (at the mouse)",      "Navigation"),
             ("Scroll wheel",    "Zoom in / out",                         "Navigation"),
@@ -7319,7 +7758,7 @@ class PhotoReviewer(ctk.CTkToplevel):
         # Update UI
         self._rename_original = new_stem
         self._title_label.configure(text=new_path.name)
-        self._rename_status.configure(text=f"✓ Renamed", fg=C_BEST)
+        self._rename_status.configure(text="✓ Renamed", fg=C_BEST)
         self.after(2000, lambda: self._rename_status.configure(text=""))
         if hasattr(self, "_rename_confirm_btn"):
             self._rename_confirm_btn.pack_forget()
@@ -7394,15 +7833,22 @@ class LauncherWindow(ctk.CTk):
 
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
-        w, h = 560, 400
+        w, h = 560, 450
         self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
         self.configure(fg_color=C_BG)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self._build_splash()
+        # Load the AI models now, while you pick a folder: ONNX Runtime keeps
+        # Python's lock while it builds a model (up to ~2 s each), which would
+        # otherwise freeze the window in the middle of culling.
+        settings = load_app_settings()
+        reviewer_accel.configure(settings.get("graphics_acceleration", True), _user_data_dir())
+        self.after(600, lambda: threading.Thread(target=_warm_models, args=(settings,),
+                                                 daemon=True, name="warm-models").start())
 
     def _build_splash(self) -> None:
         recent = _load_recent_folders()
-        h = 470 + len(recent) * 40
+        h = 512 + len(recent) * 40
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         self.geometry(f"580x{h}+{(sw-580)//2}+{(sh-h)//2}")
@@ -7462,6 +7908,24 @@ class LauncherWindow(ctk.CTk):
             command=self._import_card,
         ).pack(fill="x", pady=(0, 6))
 
+        ctk.CTkButton(
+            action,
+            text="🗂   Collect Best folders…",
+            font=ctk.CTkFont("Helvetica", 12),
+            height=36, corner_radius=10,
+            fg_color=C_BORDER, hover_color=_darken(C_ACCENT),
+            command=self._collect_best,
+        ).pack(fill="x", pady=(0, 6))
+
+        ctk.CTkButton(
+            action,
+            text="🦜   Species list from archive…",
+            font=ctk.CTkFont("Helvetica", 12),
+            height=36, corner_radius=10,
+            fg_color=C_BORDER, hover_color=_darken(C_ACCENT),
+            command=self._species_list,
+        ).pack(fill="x", pady=(0, 6))
+
         ctk.CTkLabel(action,
                      text="NEF · CR2 · CR3 · ARW · RAF · DNG · JPG · TIFF and more",
                      font=ctk.CTkFont("Helvetica", 8),
@@ -7504,6 +7968,16 @@ class LauncherWindow(ctk.CTk):
         self._build_splash()
         self.deiconify()
         self.lift()
+
+    def _collect_best(self) -> None:
+        """Gather every Best folder under a parent into one library (copies)."""
+        from reviewer_collect_ui import CollectDialog
+        CollectDialog(self)
+
+    def _species_list(self) -> None:
+        """One photo of every species per country from an archive, plus CSV lists."""
+        from reviewer_species_list_ui import SpeciesListDialog
+        SpeciesListDialog(self)
 
     def _import_card(self) -> None:
         """Copy a memory card into dated folders; open the first one as soon as
@@ -7574,6 +8048,23 @@ class LauncherWindow(ctk.CTk):
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
+def _warm_models(settings: dict) -> None:
+    """Thread: load each AI model once, early (they're shared by every folder)."""
+    steps = []
+    if settings.get("detect_animals", True):
+        steps.append(get_detector)
+    # (the search text model is only needed for a search: it loads then, ~1 s)
+    steps += [get_species_model, get_embedder, get_image_encoder]
+    if settings.get("eye_check", True):
+        steps.append(get_eye_finder)
+    for load in steps:
+        try:
+            load()
+        except Exception as e:
+            log.debug("Model warm-up failed (%s): %s", getattr(load, "__name__", load), e)
+        time.sleep(0.25)                  # let the window catch up between loads
+
 
 def main() -> None:
     if len(sys.argv) == 4 and sys.argv[1] == reviewer_accel.DEQUANTIZE_FLAG:

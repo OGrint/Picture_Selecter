@@ -1,6 +1,8 @@
 # Keyboard shortcuts
 
-Press **?** in the app for this list on screen. Keys are the same with or without Caps Lock. Keys typed in a text box (metadata, labels, search) or in the import window never tag photos.
+Press **?** in the app for this list on screen. Keys are the same with or without Caps Lock. Keys typed in a text box (metadata, name, labels, search) or in the import window never tag photos, including the Enter that confirms a box.
+
+To get the keys back from a text box: press **Escape**, click anywhere outside the box, or close the view. Running a search also hands the keys to the results, so the arrows and number pad move through them straight away.
 
 ## Main viewer
 
@@ -10,6 +12,7 @@ Press **?** in the app for this list on screen. Keys are the same with or withou
 |---|---|
 | ← / → (or numpad 4 / 6) | Previous / next image (within the current pass) |
 | Tab | Next unreviewed image |
+| R / ⇥ Resume | The furthest image with a tag or rating: where you got to last time |
 | K | The predicted keeper of this burst |
 | Scroll wheel | Zoom in / out |
 | Drag | Pan when zoomed |
@@ -58,7 +61,8 @@ Press **?** in the app for this list on screen. Keys are the same with or withou
 | Key | Action |
 |---|---|
 | Arrow keys, Page Up / Down, Home / End | Move the cursor |
-| Enter / double-click | Open the photo in the viewer |
+| Number pad 4 / 6 / 8 / 2, 9 / 3, 7 / 1 | The same: left / right / up / down, page up / down, first / last |
+| Enter, number pad Enter or double-click | Open the photo in the normal viewer |
 | Shift + arrows / Shift + click | Select a range |
 | Ctrl + click / Ctrl + A | Toggle one / select all shown |
 | B, D, I, 1–5, 0 | Tag or rate the selection (or the photo under the cursor), as one undo step |
@@ -84,6 +88,21 @@ All the gallery keys above, plus:
 | Enter | Confirm |
 | U | Unsure |
 | X | Not identifiable |
+
+## Species list Review
+
+| Key | Action |
+|---|---|
+| 1 – 3 | Pick that guess (already in the list: keep the photo there, remove this copy) |
+| Shift + 1 – 3 | Pick that guess and keep this photo instead |
+| Enter | Confirm the name in the box |
+| Shift + Enter | Confirm, and keep this photo instead of the one in the list |
+| Del / X | Remove this photo from the list (a species seen elsewhere keeps its next photo) |
+| Ctrl + Z | Undo the last change |
+| ← → | Previous / next photo |
+| ↑ ↓ | The burst's other frames |
+| V / double-click | Open the original |
+| Esc | Close |
 
 ## Buttons without keys
 

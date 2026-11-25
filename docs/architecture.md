@@ -33,8 +33,19 @@ reviewer_sightings.py  bursts → sightings (time gap, species, look)
 reviewer_search.py     CLIP tokenizer + encoders, per-folder index, library roots,
                        drive tracking by volume serial, offline index
 reviewer_eyes.py       eye finder (OWLv2), eye sharpness, burst comparison, cache
+reviewer_collect.py    Collect Best folders: find trips, re-screen rule, versions, names, copy
+reviewer_collect_ui.py its window (preview tree, rename trip, set species, copy)
+reviewer_species_list.py    Species list from archive: find photos, places and countries,
+                            bursts, identify (resumable cache), one per species per country
+reviewer_species_list_ui.py its window (countries, identify, results, copy)
+reviewer_species_review_ui.py  Review…: one photo at a time, pick a guess / your own
+                            name / remove; ListEditor (in reviewer_species_list) moves the copies
+reviewer_inat.py       Review's "Compare with iNaturalist": a species' reference photos (cached)
+reviewer_refine.py     learning from Review decisions: Examples (fingerprint + your answer) and
+                       Refiner, a few-shot cache adapter on BioCLIP's image features whose
+                       strength is fitted by leave-one-day-out testing (off if it doesn't help)
 reviewer_accel.py      graphics-chip acceleration: Runner wraps a model, checks the
-                       OpenVINO copy against the CPU, falls back; int8 → fp16 helper
+                       OpenVINO copy against the CPU, falls back; int8 → weight-only int8 helper
 tools/model_export/    one-off scripts that made the ONNX models (see ai-models.md)
 tests/                 unit tests (see testing.md)
 ```
@@ -73,7 +84,22 @@ Tk is single-threaded, so **worker threads never touch widgets**:
 
 **Pending sets** (`_eye_pending`, `_rawclip_pending`…) stop the same photo being queued twice. Background and "now" requests have separate sets, so the photo on screen can jump the background queue.
 
-**Undo:** every tag, rating, keyword or metadata change goes through `_set_fields`, which saves the session (debounced), writes the XMP sidecar and records one undo step. `_run_batch` groups changes to many photos into one step.
+**Undo:** every tag, rating, keyword or metadata change goes through `_set_fields`, which records one undo step and queues the saves. `_run_batch` groups changes to many photos into one step.
+
+**Saving happens on a writer thread.** On a USB drive one write can take a second, and the window must never wait for it.
+- **Queued:** `_set_fields` queues the photo's XMP sidecar (`_queue_xmp`; the latest tags per photo win, so quick changes are combined), and the session file is queued 0.4 s after the last change (`_queue_status_save`, using a copy of the session).
+- **Written ahead of background reads:** `_writer_loop` writes inside `foreground_read()`, so background passes on that drive wait for it.
+- **Saving now:** `_save_status_now` queues the session file and then waits (`_flush_writes`) until everything is written. It's used before closing, switching folder, renaming and Process, so nothing is ever lost or written into a renamed folder.
+
+**Nothing reads the disk on the window thread.**
+- **The photo on screen:** if it wasn't preloaded, `_show_worker` loads it. Its thumbnail shows meanwhile, and preloading the neighbours waits until it's in.
+- **Full resolution for Z / E / L:** comes from `_detail_worker`. `_ensure_detail_now(then=…)` runs the zoom once the image arrives.
+- **Compare panels** load on a worker.
+- **Cache saves** all go through the writer thread (`_queue_job`).
+- **Folder preparation** (hashing) starts once the first photo is on screen.
+- **Decode size:** previews are decoded at the canvas's shape (`_display_box`), which for a D850 preview on a 1900×1000 window means a quarter-size decode.
+
+**Disk priority.** `background_read(path)` / `foreground_read()` in `reviewer_imaging` make background passes on non-system drives read one file at a time and give way to the viewer, preload, zoom, thumbnails and the writer.
 
 ## Graphics-chip acceleration (`reviewer_accel`)
 
@@ -81,7 +107,7 @@ Tk is single-threaded, so **worker threads never touch widgets**:
 
 - **Start on the CPU:** a Runner works on the CPU immediately.
 - **Background compile:** a background thread compiles an OpenVINO GPU copy, times it and compares it with the CPU, and switches over only when it agrees and is faster.
-- **int8 models:** with `dequantize=True` they're converted to fp16 weights by `photo_reviewer.py --make-gpu-model` in a separate process (so the conversion can't freeze the UI) and cached.
+- **int8 models:** with `dequantize=True` they're rewritten as weight-only int8 (DequantizeLinear → float MatMul/Conv) by `photo_reviewer.py --make-gpu-model` in a separate process, so the conversion can't freeze the window, and cached.
 - **Clean exit:** at exit, `shutdown()` releases the OpenVINO objects, which avoids a Windows hang during DLL teardown.
 
 A model with several inputs or outputs is first rewritten into single-input, single-output form. The eye model is an example: its text queries are built in (`tools/model_export/bake_eye.py`).
@@ -93,7 +119,7 @@ A model with several inputs or outputs is first rewritten into single-input, sin
 3. **Never touch RAW files.** Write metadata to the sidecar (`write_xmp_sidecar`), merging into sidecars written by other programs.
 4. **No Tk from worker threads.** Use a queue and a drain method.
 5. **Heavy work goes in a background pass,** not in the main analysis. Put the photo on screen first and keep the UI responsive.
-6. **Nothing personal leaves the computer.** The only network access is the iNaturalist species list (place id and taxon only).
+6. **Nothing personal leaves the computer.** The only network access is iNaturalist: the country species lists (place id and taxon only) and, when you ask for it in Review, a species' reference photos (its scientific name only).
 7. **Keep line endings.** `build_app.bat` and `photo_reviewer.spec` must stay CRLF.
 
 ## Where to start for common changes

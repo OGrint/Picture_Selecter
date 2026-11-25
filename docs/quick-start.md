@@ -57,13 +57,19 @@ In the **NAME FOR BEST** panel the species (suggested, or press **N** to accept)
 
 Press **▶ Process**:
 
-- **Best** frames are copied to `Best\`, renamed with the name pattern if you ticked it, with their XMP sidecars.
+- **Best** frames are copied to `Best\` with their XMP sidecars. If you tick renaming, every planned name is listed: untick any photo whose copy should keep its camera name.
 - **ID** frames are converted to JPEG in `ID\`.
 - **Delete** frames go to the Recycle Bin.
 
 Then take `Best\` into Topaz and darktable. Ratings, labels and keywords are already in the XMP sidecars.
 
-## 7. Later: find anything
+## 7. Now and then: collect your Best photos
+
+**🗂 Collect Best folders…** on the start screen copies the final Best photos of every trip under a folder, with their Topaz and darktable versions, into one library sorted by year, trip and species. Check the preview, fix trip names and species, then Copy. Run it again any time; only new photos are added.
+
+**🦜 Species list from archive…** does the same for a species list: every photo under a folder → one photo of each species per country, plus CSV lists. Uncertain IDs go into *To clarify*; check them in the app with **Review…** (pick a guess with 1–3, type your own, or Del to remove). It's resumable: stop it whenever you like.
+
+## 8. Later: find anything
 
 **🔍 Search** finds photos by description across all your library folders ("kingfisher with fish", "snowy owl portrait"), with Best / stars / species / year filters. Folders on the external drive are still searchable while it's unplugged, from an offline copy with thumbnails.
 

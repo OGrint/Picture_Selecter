@@ -32,7 +32,7 @@ import numpy as np
 from PIL import Image
 
 import reviewer_accel
-from reviewer_imaging import _open_thumb_unoriented, auto_orient
+from reviewer_imaging import _open_thumb_unoriented, auto_orient, background_read
 
 log = logging.getLogger("photo_reviewer")
 
@@ -137,7 +137,9 @@ def measure(path: str, animal_box, finder: EyeFinder) -> Optional[dict]:
     x0, y0, x1, y1 = animal_box[:4]
     if (x1 - x0) * (y1 - y0) < MIN_ANIMAL:
         return None
-    full = auto_orient(_open_thumb_unoriented(path))
+    with background_read(path):
+        full = auto_orient(_open_thumb_unoriented(path))
+        full.load()
     W, H = full.size
     mx, my = 0.08 * (x1 - x0), 0.08 * (y1 - y0)
     cb = (int(max(0, x0 - mx) * W), int(max(0, y0 - my) * H),

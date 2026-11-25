@@ -16,3 +16,6 @@ Output/
 # Temporary files
 *.tmp
 *.tmp.npz
+
+# VS Code settings (this computer's Python path)
+.vscode/

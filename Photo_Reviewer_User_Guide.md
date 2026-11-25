@@ -71,13 +71,13 @@ Nothing on the card is changed. Files already imported are skipped — they are 
   - **Analysing** — scoring every image and looking for animals
 - All previous tags and ratings from your last session are restored automatically
 
-On a laptop with Intel graphics the AI models (animal detection, species, keeper prediction, AI search) run on the graphics chip, which makes analysis about twice as fast (roughly 16 → 7 minutes for 3,000 D850 frames on an Intel Core Ultra laptop). While it gets ready the header says **preparing graphics chip…** and then **using graphics chip**. Analysis starts on the CPU straight away and switches over once each model is ready. Each model is only switched after a check that the graphics chip gives the same answer as the CPU and is faster; otherwise it stays on the CPU, so the results are the same either way. The first time, the app makes a graphics-chip copy of the species and search models (about a minute, in the background, about 800 MB in `%APPDATA%\PhotoReviewer\gpu_models`). It works on mains or battery. To turn it off, set `"graphics_acceleration": false` in the settings file.
+On a laptop with Intel graphics the AI models (animal detection, species, keeper prediction, AI search) run on the graphics chip, which makes analysis about twice as fast (roughly 16 → 7 minutes for 3,000 D850 frames on an Intel Core Ultra laptop). While it gets ready the header says **preparing graphics chip…** and then **using graphics chip**. Analysis starts on the CPU straight away and switches over once each model is ready. Each model is only switched after a check that the graphics chip gives the same answer as the CPU and is faster; otherwise it stays on the CPU, so the results are the same either way. The first time, the app makes a graphics-chip copy of the species and search models (a few seconds, in the background, about 400 MB in `%APPDATA%\PhotoReviewer\gpu_models`). It works on mains or battery. To turn it off, set `"graphics_acceleration": false` in the settings file.
 
 Progress is saved as it goes, so if you close the app part-way through it carries on from where it stopped next time. Re-opening a folder that has been fully analysed does no analysis again. If the folder can't be written to (a locked card or read-only folder) you are warned, because nothing could be saved.
 
 ### Resuming a session
 
-Your tags, ratings, scores, and hashes are saved to JSON files in your image folder. Close the app at any time and reopen the folder to resume exactly where you left off.
+Your tags, ratings, scores, and hashes are saved to JSON files in your image folder as you go. Close the app at any time and reopen the folder: everything is restored. The folder opens at its first photo. Press **R** (or **⇥ Resume**) to jump to the furthest photo you've tagged or rated, then carry on with →. **Tab** instead finds the next photo you haven't tagged yet.
 
 ---
 
@@ -157,10 +157,11 @@ Click **▶ Process** in the footer when you have finished culling. After you co
 - **ID** images are converted to full-quality JPEGs in an `ID/` subfolder
 - **Delete** images are moved to the Recycle Bin (with their sidecars)
 
-A progress panel shows how far it has got and roughly how long is left; converting RAW files to JPEG is the slow part.
+A progress panel shows how far it has got and roughly how long is left. While Process runs, the background passes (raw clipping, eye check, search indexing) pause, so the copies get the drive to themselves. Copying Best files within the same USB hard drive is still limited by the drive's speed. Converting an ID RAW to JPEG takes several seconds each.
 
 **Naming the Best copies.** In the Process dialog, tick **Rename the copies in Best/** to name them for the rest of your workflow — by default `Species_Date_Location_001`, e.g. `Grey-Heron_2026-05-12_Minsmere_001.NEF`. Topaz and darktable then carry those names through, so no renaming is needed after export. The originals keep their camera names.
 
+- **Review every name before processing:** with renaming ticked, the dialog lists every Best photo with the name its copy will get. Click a row (or select rows and press Space) to untick it; an unticked photo's copy keeps its original camera name. **Tick all**, **Untick all** and **Only confirmed species** set them all at once. Names that come from an unconfirmed species suggestion are shown in amber, and *Unidentified* ones in red. The numbering closes up over the ticked photos only.
 - Fields you can use: `{species}` `{date}` `{location}` `{n}` (001, 002… per species, date and location, in capture order) `{time}` `{orig}` (original name)
 - **Species**, **Date** and **Location** come from the NAME FOR BEST panel: what you confirmed, otherwise the species suggestion, the capture date and the folder label. The dialog tells you how many names come from unconfirmed suggestions; images with no species at all are named *Unidentified*
 - Set species or location for many images at once: select them in the gallery or burst view and use **Species…** / **Location…** on the selection bar
@@ -314,7 +315,7 @@ The JPEG preview inside a RAW file shows highlights as pure white long before th
 
 Clipping that runs on outside the animal's box (a blown sky behind a perched bird) counts as background, not as the animal. A white bird against an equally blown sky merges with it and isn't flagged; the frame figure still shows it. When at least 1 % of the animal is blown you get the **Highlights blown on the animal** suggestion. For RAW files the **Exposure** score uses the raw data too, with clipping on the animal counting more than clipping elsewhere. Press **H** (or **Clip**) to see exactly where it clipped.
 
-Unpacking a NEF's sensor data takes about a second, so this is read in its own background pass after the main analysis (two at a time; about 25 seconds per 40 frames on an Intel laptop) — the photo on screen is always read first, so its line appears within a second or two. Folders you analysed before this was added get just this pass, once, the next time you open them.
+Unpacking a NEF's sensor data takes about a second, so this is read in its own background pass after the main analysis (two at a time), and the photo on screen is always read first. **On an external (USB) drive** only the photo on screen and Best-tagged photos are read: reading every whole NEF would keep a slow drive busy for most of an hour on a large folder and slow everything else down. Set `"raw_clip_external": "all"` to read every frame anyway. Folders you analysed before this was added get just this pass, once, the next time you open them.
 
 ### Animal detection and suggestions
 
@@ -510,6 +511,105 @@ The panel auto-collapses if your current folder has fewer than 3 siblings.
 
 ---
 
+### Collect Best folders into one library
+
+**🗂 Collect Best folders…** on the start screen gathers every Best folder under a parent folder (any depth: year → month → day, holidays…) into one collection, sorted by trip and species. Originals are **copied**, never moved, so each shoot folder stays as it is.
+
+```
+Collection\
+  2026\
+    2026-03 Spain\
+      Iberian Lynx\
+        Iberian-Lynx_2026-03-14_Spain_001.NEF        original
+        Iberian-Lynx_2026-03-14_Spain_001.xmp
+        Iberian-Lynx_2026-03-14_Spain_001_topaz.dng  Topaz
+        Iberian-Lynx_2026-03-14_Spain_001_final.jpg  darktable export
+      Golden Eagle\ …
+    2026-09 Scotland\ …
+```
+
+- **Which photos:** folders named *Best* or *Final best* (any capitalisation). If you re-screened a Best folder (a *Best* inside a *Best*, or *Final best* beside *Best*), only the deepest non-empty one is collected, because that's your final decision; the preview notes which were passed over. Folders such as *Best Combined* or *24 Best* aren't Best folders and are left alone (also listed).
+- **Edits:** files in any sub-folder of a trip's Best folders (`tp`, `edited`, `Edited`, `tp/edited`…) are collected next to their original, never treated as duplicates:
+  - **Labels:** `_topaz` for Topaz output (`tp-…`, or in a `tp` folder); `_final` for exports in an *edited* / *export* / *final* folder; `_edit` for anything else; a second of the same kind is `_final-2`.
+  - **Matching:** an edit is matched to its frame by the DSC number in its name, or the capture time for renamed exports. It's matched even if the frame itself isn't in the final Best folder, as long as it's in the shoot folder; then the edit is named properly but the original isn't copied.
+  - **No match:** edits with no findable original go in *Unmatched edits*.
+- **Trips:** `YYYY-MM Place`, from the month most of the photos were taken in and the most descriptive folder name on the path (`26/Spain` → `2026-03 Spain`; plain day folders like `May/2` → `2026-05 May`). If a camera's clock was obviously wrong (e.g. 2000), the trip is dated from the folders instead and the files are named by month only. **Double-click a trip** in the preview to rename it.
+- **Species:** what you confirmed in the app, the species already in a Best file name, or, with **Identify the species…** ticked, a suggestion from the species model on the animal MegaDetector finds. That takes about 1 s per photo the first time; results are remembered, so scanning again is quick. Suggestions are amber in the preview and *Unidentified* is red. **Select photos and use Set species…** to correct them; their edits follow.
+- **Duplicates:** the same file (byte for byte) in two trips is collected once.
+- **Nothing happens until you press Copy.** The preview lists every file and where it will go; click ✓ (or select rows and press Space) to leave files out. Copies are verified and can be stopped part-way. **Running it again only adds what's new**: `collection.json` in the collection folder records what came from where, earlier names never change, and new photos continue the numbering.
+
+### Species list from your archive
+
+**🦜 Species list from archive…** on the start screen goes through **every photo** under a folder (not just Best folders) and copies **one photo of each species per country**, with CSV lists. It's for building an ID list from an old archive. Everything is saved in a **Species list** folder inside the folder you chose (like your *Best Combined*). That folder is never read itself. It copies only; your originals are never changed.
+
+```
+<the folder you chose>\Species list\
+  All species.csv               every species, country, dates, how it was identified
+  Countries.csv                 per country: species, how many of each group, dates, to clarify
+  Species by country.csv        one row per species, a column per country (date first seen there)
+  Species by year.csv           one row per species, a column per year (sightings that year)
+  To clarify.csv
+  Species list.xlsx             all of the above in one Excel workbook, a tab per list
+  Spain\
+    Spain species.csv
+    Birds\
+      Eurasian Hoopoe (Upupa epops)_2019-05-12.NEF
+    Mammals\
+      Iberian Lynx (Lynx pardinus)_2019-03-14.NEF
+    To clarify\
+      Willow Warbler (Phylloscopus trochilus) - possible\
+        2019-03-15_DSC_0200 (Willow Warbler 45%, Chiffchaff 30%, Wood Warbler 9%).NEF
+  Kenya\ …
+  Unknown country\ …
+```
+
+1. **Find folders.** Every photo is found and grouped by place, with its country:
+   - **From folder names:** *Spain*, *Kenya 2019*, *UK*…
+   - **From XMP sidecars:** a country entered in darktable or Lightroom.
+   - **Otherwise it's red.** Folders are shown as a tree. Select one or more (Ctrl / Shift + click) and use **Set country…** (or double-click). A country set on a folder applies to **every folder under it**, except folders with a country of their own: named after one (*Spain*), from XMP, or set by you. So set *UK* on the year folder and only *Spain* keeps its own. *Automatic* removes what you set, so the folder inherits again. Your choices are remembered. The D850 doesn't record where a photo was taken, so most countries come from folder names.
+2. **Identify species.** This runs in the background and can take hours for a big archive on the external drive. **Stop** whenever you like: everything read is remembered, so pressing Identify again carries on where it stopped, and photos already read take no time.
+   - **Your own IDs:** species you named in the app, or that are already in an app file name, count as certain.
+   - **Everything else:** the species model reads the animal MegaDetector finds and re-ranks its guesses with the country's species list, as in the app.
+   - **Certain** means at least the **Certain at** probability (80 % unless you change it) **and** recorded in that country.
+   - **To clarify:** anything less is filed under its best guess, with the top three guesses in the file name. **To clarify: up to … photos per best guess** (1, 3, 7, 10 or All; 7 unless you change it) limits how many are copied. For example, if 40 uncertain photos in the UK all have *Willow Warbler* as the best guess, the best 7 (from different days where possible) go into *United Kingdom\To clarify\Willow Warbler (Phylloscopus trochilus) - possible*. Guesses that are also certain in that country are included.
+   - **Rarities:** a species with very few iNaturalist records in that country (fewer than 25, or half the country's typical count where records are sparse) goes to *To clarify* too, however sure the model is. Beluga in Scotland (9 records) and Franklin's Gull in Spain (16) are examples.
+   - **Out of range:** a bird never recorded in that country can still be the answer (vagrants turn up), so it's only marked down a little, and goes to *To clarify* to check. A mammal, reptile or amphibian never recorded there almost never is, so it's marked down hard. If a relative in the same genus is recorded there, that relative wins (Red Deer, not Elk, in the UK). Dragonflies and butterflies sit in between, as some migrate.
+   - **Organised by type, species and year:** the lists run Birds A–Z, then Mammals A–Z and so on, with the **Years** each species was seen. *Species by year.csv* (and its tab in the workbook) has a column per year with how many sightings there were that year.
+   - **Bursts:** a burst (frames at most 2 s apart) counts as one sighting. One frame is read, a Best-folder frame first, and more only while it stays uncertain. A mixed flock in a single burst gives only its clearest species.
+   - **Duplicates:** the same photo in a shoot folder and its Best folder is read once.
+   - **No animal:** frames without one are skipped.
+3. **Copy list.** The photo kept for each species is the best one found: in a Best folder, the animal large in the frame, a confident ID. Copies are verified. Running it again keeps the photo already chosen for a species, and adds only new species and new photos to clarify.
+4. **Review…** goes through the list in the app, like **ID Review**: one photo at a time, large, with the model's top three guesses. Pick **Show** *To clarify* (the default), *Name check ⚠* (species whose AI name looked odd) or *All species*, and a **Country** (or *All countries*).
+   - **1–3** (or click) picks a guess. Guesses already in that country's list are marked **✓ in list**.
+   - **Type your own name** (common or scientific; the list offers matches, the country's own names first) and press **Enter**.
+   - **Duplicates:** if the species is already in that country's list, the photo there is shown underneath. **Enter** keeps that photo and removes this copy. **Shift+Enter** (or Shift+1–3, Shift+click) keeps this photo instead.
+   - **Del** (or X) removes the photo: no animal, unidentifiable, or not wanted.
+   - **Removing a confident species' photo** (under *All species*) removes only that photo, not the species. If the species was seen elsewhere in that country, its next best photo takes its place straight away and is shown for you to check (remove that too if it's also wrong). If there's no other confident sighting, uncertain photos in that country that had it as one of their guesses go into *To clarify*, so a species the AI got wrong on one photo isn't lost if you really did see it.
+   - **Side by side (G)** shows every photo filed under the same best guess at once (or a species' other sightings), so look-alikes and odd ones out stand out. Click one to pick it. Remembered for next time.
+   - **Compare with iNaturalist (I)** puts photos of the species in the box (or the best guess) from iNaturalist next to yours. Click it for the next photo (up to 6); right-click opens the species' iNaturalist page. Only the scientific name is sent; each species' photos are downloaded once and kept. The photo's credit is shown under it.
+   - **Ctrl+Z** (or **↶ Undo**) takes back the last change, as far back as you like in this session: files, lists and what the AI learns from. Removed copies wait in a hidden folder and go to the Recycle Bin when you close Review.
+   - **Reason / note** (optional): why it's this species (*juvenile*, *female*…) or why it's removed (*duplicate*, *no animal*…). Pick one or type your own. It's saved with your decision and shown in the lists' **Your note** column.
+   - **← →** next / previous photo · **↑ ↓** the burst's other frames · **V** (or double-click) opens the original · **Esc** closes.
+   - The copies in *Species list* are moved, merged or removed to match, and the CSV lists are rewritten after every decision. Removed copies go to the Recycle Bin; your originals are never changed. Renaming a species under *All species* renames every sighting of it in that country.
+   - Your decisions are remembered (in `species_list.json`): Identify again treats a photo you named as your own ID, and leaves out a photo you removed.
+
+   **The AI learns from your decisions.** Every photo you confirm in Review, whether you accept the AI's guess or correct it, becomes an example: the photo's fingerprint (what the species model sees) and your answer. The next time you press **Identify**, a photo is compared with your examples. The more it looks like the ones you called *Chiffchaff*, the more *Chiffchaff* is favoured. It's a soft pull, not a rule: one example changes little, many similar ones a lot, and a photo that doesn't look like any of them is left as the AI sees it. How strong the pull is gets tested on your own decisions, holding out each day's photos in turn while it learns from the rest. If it doesn't make the answers better, it stays off until there are more examples. It needs at least 8 decisions from 3 days to start.
+   - After Identify, the summary says how many decisions it learned from, how often it was right on held-out photos before and after, and how many results it changed. Changed results show *learned* in the list, and *To clarify* photos show how, e.g. *AI said Willow Warbler 45%; Chiffchaff 30% → 84%*. A changed result still has to pass *Certain at*.
+   - Photos read before this was added are re-read once, only the uncertain ones, to get their fingerprint. That takes minutes, not hours.
+   - The examples are shared by every list you make, so decisions on 2026 help with your holiday archive.
+   - **Your other IDs teach it too:** species you confirm in the main window (ID Review, or the name panel) become examples, and so do species you named in the past (up to 6 photos each, from different days, found when Identify runs). The main window's suggestions also use what it has learned: the line under the region (and under ID Review's suggestions) says how many of your IDs it has learned from and how much better it got on photos held out.
+   - Removed photos aren't examples (there's no answer to learn), and nor are names the AI doesn't know. The AI can't read your note; it learns from the photo and the name you give it.
+
+   **Review straight away:** the last results for a folder are kept, with your Review changes, so when you open the window again **Review…** and **Copy list** work without identifying again. Press Find folders and Identify species to include new photos or changes.
+
+**Groups covered:** birds, mammals, reptiles, amphibians, dragonflies, butterflies and moths. Other animals (fish, beetles, spiders…) usually end up in *To clarify* under the closest guess. Domestic animals can too (a Highland cow guessed as *Yak?*).
+
+**Names:** each species is named *Common name (Scientific name)*. A few species are listed twice in the AI's list under slightly different scientific names (*Dendrocopos* / *Dendrocopus major*, the Great Spotted Woodpecker): those are counted as one, with their chances added together. Common names are the British English names from iNaturalist (downloaded with the country's species list), because the model's own are sometimes American or odd. Where they differ, the list's **Name check** column shows the model's name: *AI: Spanish Lynx* is a variant; *⚠ the AI called it Elk* (for Red Deer) means the two names have nothing in common, and is amber in the window. Names you gave in the app are kept as they are. Without a country, the model's name is used and marked *name not checked*.
+
+**Changing your mind:** change a country, *Certain at* or the number per guess, then press Identify again. Re-ranking is instant, because nothing needs reading again. What you decided in **Review…** is kept.
+
+**Speed:** on the laptop drive, all of 2026 (9,549 photos) took about 7 minutes, because only 3,753 needed reading (bursts and duplicates are read once). The external USB drive is slower; leave a big archive running overnight. Running it again takes seconds.
+
 ## 15. Send to Topaz
 
 Click **→ Topaz** in the footer to send images to Topaz Photo AI for noise reduction or sharpening.
@@ -575,6 +675,7 @@ This is a reminder that marking images as Delete and then removing the card with
 | ← / → | Previous / Next image |
 | Numpad 4 / 6 | Previous / Next image |
 | Tab | Jump to next unreviewed image |
+| R | Resume: jump to the furthest tagged image (where you got to last time) |
 | K | Jump to the predicted keeper of this burst |
 | N | Confirm the suggested species (for the whole burst) |
 | G | Open / close gallery |
@@ -700,7 +801,7 @@ App-wide settings (Topaz path, keyword palette, recent folders) are stored in yo
 | `regions\<country>.json` | `%APPDATA%\PhotoReviewer\` — downloaded species lists per country (refreshed yearly) |
 | `import_settings.json`, `imported.json` | `%APPDATA%\PhotoReviewer\` — import setups, and the record of card files already imported |
 | `library\` | `%APPDATA%\PhotoReviewer\` — offline search copies and small thumbnails for library folders on external drives |
-| `gpu_models\` | `%APPDATA%\PhotoReviewer\` — graphics-chip copies of the models (about 800 MB, safe to delete) |
+| `gpu_models\` | `%APPDATA%\PhotoReviewer\` — graphics-chip copies of the models (about 400 MB, safe to delete) |
 
 Every file and its format: [docs/data-files.md](docs/data-files.md).
 

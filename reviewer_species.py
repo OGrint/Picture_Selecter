@@ -40,6 +40,61 @@ _MEAN = np.array((0.48145466, 0.4578275, 0.40821073), np.float32)
 _STD  = np.array((0.26862954, 0.26130258, 0.27577711), np.float32)
 
 
+def _close(a: str, b: str, most: int = 2) -> bool:
+    """Spelled within `most` letters of each other."""
+    if abs(len(a) - len(b)) > most:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1] <= most
+
+
+def synonyms(labels: list[tuple[str, str]]) -> dict[str, str]:
+    """{scientific name: the one to use} for species listed twice: the same common
+    name AND the scientific names a spelling apart (Dendrocopos / Dendrocopus
+    major) or only the genus different (a renamed genus). Different common
+    names are never merged (Lanius minor the shrike ≠ Lybius minor the barbet).
+    The kept spelling is the one whose genus has more species in the list."""
+    from collections import Counter, defaultdict
+    genus = Counter(s.split(" ")[0] for _n, s in labels)
+    by_name = defaultdict(list)
+    for n, s in labels:
+        by_name[n.lower()].append(s)
+    out: dict[str, str] = {}
+    for scis in by_name.values():
+        if len(scis) < 2:
+            continue
+        # (most species in its genus first: that spelling is kept)
+        scis = sorted(dict.fromkeys(scis), key=lambda s: (-genus[s.split(" ")[0]], s))
+        for i, keep in enumerate(scis):
+            if keep in out:
+                continue
+            for other in scis[i + 1:]:
+                if other in out:
+                    continue
+                if _close(keep, other) or keep.split(" ")[-1] == other.split(" ")[-1]:
+                    out[other] = keep
+    return out
+
+
+def merge_synonyms(top: list, same_as: dict[str, str]) -> list:
+    """A top list [[name, scientific, p]] with species listed twice added together."""
+    if not same_as or not top:
+        return top
+    merged: dict[str, list] = {}
+    for n, s, p in top:
+        k = same_as.get(s, s)
+        if k in merged:
+            merged[k][2] += p
+        else:
+            merged[k] = [n, k, p]
+    return sorted(merged.values(), key=lambda r: -r[2])
+
+
 def nice_name(common: str, scientific: str) -> str:
     """'grey heron' → 'Grey Heron'; scientific name if there is no common name."""
     if not common:
@@ -67,6 +122,10 @@ class SpeciesModel:
         from reviewer_regions import group_of
         # group (birds, mammals, …) of each species, for the region hint
         self.group = {s: group_of(list(tax)) for _c, s, *tax in meta["labels"]}
+        # species listed twice (spelling variants): their chances are added together
+        self.same_as = synonyms(self.labels)
+        self._syn_from = np.array([self._index[s] for s in self.same_as], int)
+        self._syn_to = np.array([self._index[k] for k in self.same_as.values()], int)
 
     def predict(self, img: Image.Image, box: Optional[list] = None,
                 prior: Optional[dict] = None, k: int = TOP_K) -> list[list]:
@@ -75,6 +134,10 @@ class SpeciesModel:
         prior: {scientific name: weight ≥ 1} for species you've confirmed.
         Returns [[display name, scientific name, probability], …].
         """
+        return self.top(self.features(img, box), prior, k)
+
+    def features(self, img: Image.Image, box: Optional[list] = None) -> np.ndarray:
+        """The image's fingerprint (what the species names are matched against)."""
         iw, ih = img.size
         if box is not None:
             x0, y0, x1, y1 = box
@@ -85,7 +148,10 @@ class SpeciesModel:
                 img = img.crop(crop)
         x = np.asarray(img.convert("RGB").resize((224, 224), Image.BICUBIC), np.float32) / 255
         x = ((x - _MEAN) / _STD).transpose(2, 0, 1)[None]
-        feat = self._s.run(None, {"image": x})[0][0]
+        return np.asarray(self._s.run(None, {"image": x})[0][0], np.float32)
+
+    def top(self, feat: np.ndarray, prior: Optional[dict] = None, k: int = TOP_K) -> list[list]:
+        """Top species for a fingerprint (see predict)."""
         logits = self._scale * (self._emb @ feat)
         p = np.exp(logits - logits.max())
         if prior:
@@ -94,6 +160,15 @@ class SpeciesModel:
                 if i is not None:
                     p[i] *= w
         p /= p.sum()
+        return self.top_of(p, k)
+
+    def top_of(self, p: np.ndarray, k: int = TOP_K) -> list[list]:
+        """[[name, scientific, p]] from probabilities over the labels, with
+        species listed twice added together."""
+        p = p.copy()
+        if len(self._syn_from):
+            np.add.at(p, self._syn_to, p[self._syn_from])
+            p[self._syn_from] = 0.0
         top = np.argsort(-p)[:k]
         return [[self.labels[i][0], self.labels[i][1], round(float(p[i]), 4)] for i in top]
 

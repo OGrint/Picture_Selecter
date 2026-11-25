@@ -6,7 +6,7 @@ Run the app from a prompt (`python photo_reviewer.py`, not `pythonw`) to see its
 
 | Problem | What to do |
 |---|---|
-| `ModuleNotFoundError: customtkinter` (or rawpy, imagehash…) | The wrong Python is running. `conda activate Photo` first, or use the environment's full path, `<env>\python.exe` (see `local_setup.ini`). |
+| `ModuleNotFoundError: customtkinter` (or rawpy, imagehash…) | The wrong Python is running: often a separate python.org install that VS Code picked. Use `run_photo_reviewer.bat`, the **Photo Reviewer** run configuration in VS Code, or Ctrl+Shift+P → **Python: Select Interpreter** → `Photo`. From a prompt: `conda activate Photo` first, or use `<env>\python.exe` (see `local_setup.ini`). |
 | Nothing happens from the desktop shortcut | Run the same command with `python.exe` instead of `pythonw.exe` to see the error. Check the shortcut's "Start in" folder. |
 | A panel says *Animal detection unavailable*, *Species unavailable*, *Eye check unavailable — model file … not found* | That model file is missing from `models\`. See [Installation](installation.md#the-model-files). |
 | *…unavailable* without a missing file | `onnxruntime` isn't installed in the environment: `pip install onnxruntime`. |
@@ -19,7 +19,7 @@ Run the app from a prompt (`python photo_reviewer.py`, not `pythonw`) to see its
 | The header never says *using graphics chip* | No Intel graphics chip found, or a model was slower or different there and stayed on the CPU, which is deliberate. Hover over the status for the per-model detail. `graphics_acceleration: false` or `PHOTO_REVIEWER_GPU=0` turns it off. |
 | The eye check takes a long time | It's the slowest pass: about 1.5 s per frame on the graphics chip, 5–6 s on the CPU. It runs after everything else and never holds you up. The photo on screen is always done first. Turn it off with `"eye_check": false`. |
 | The window freezes for a few seconds during a folder's first analysis | A known issue, mostly the first time the graphics-chip copies are being made. It clears by itself. |
-| `%APPDATA%\PhotoReviewer\gpu_models` is big | About 800 MB of graphics-chip model copies. Safe to delete; they're remade once. |
+| `%APPDATA%\PhotoReviewer\gpu_models` is big | About 400 MB of graphics-chip model copies. Safe to delete; they're remade once. |
 
 ## Culling
 

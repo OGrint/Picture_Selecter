@@ -38,7 +38,15 @@ GROUPS = {"birds": 3, "mammals": 40151, "reptiles": 26036, "amphibians": 20978,
           "dragonflies": 47792, "butterflies": 47224}
 IN_REGION = 3.0          # weight for species recorded in the country
 NOT_IN_REGION = 0.15     # covered group, never recorded there (genus unknown too)
+# Out of range, by type: birds turn up as vagrants, insects migrate; mammals,
+# reptiles and amphibians almost never do (and a "same genus" relative recorded
+# there is far likelier: Red Deer, not Elk, in the UK).
+NOT_IN_REGION_BY_GROUP = {"birds": 0.3, "mammals": 0.02, "reptiles": 0.04, "amphibians": 0.04}
+SAME_GENUS_BY_GROUP = {"mammals": 0.25, "reptiles": 0.5, "amphibians": 0.5}
+VAGRANT_GROUPS = {"birds", "dragonflies", "butterflies"}
 
+NAMES_ISO = "GB"         # common names: British English, whichever country (asking for the
+                         # country's own gives Spanish names in Spain: "Buitre leonado")
 ALIASES = {"uk": "GB", "england": "GB", "scotland": "GB", "wales": "GB", "britain": "GB",
            "usa": "US", "america": "US", "uae": "AE", "holland": "NL"}
 
@@ -104,13 +112,13 @@ class RegionLists:
     def get(self, iso: str) -> Optional[dict]:
         """{'species': {scientific: count}, 'groups': [...]} or None if not downloaded."""
         if iso in self._mem:
-            return self._mem[iso]
+            return _both_spellings(self._mem[iso])
         try:
             data = json.loads(self._path(iso).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
         self._mem[iso] = data
-        return data
+        return _both_spellings(data)
 
     def stale(self, iso: str) -> bool:
         d = self.get(iso)
@@ -134,6 +142,8 @@ class RegionLists:
     def _fetch(self, c: dict, done) -> None:
         iso, err = c["iso"], None
         species: dict[str, int] = {}
+        names: dict[str, str] = {}               # British English common names
+        name_place = (by_iso(NAMES_ISO) or c)["place_id"]
         groups: list[str] = []
         try:
             for group, taxon in GROUPS.items():
@@ -141,19 +151,23 @@ class RegionLists:
                 while page <= 20:
                     q = urllib.parse.urlencode({"place_id": c["place_id"], "taxon_id": taxon,
                                                 "verifiable": "true", "rank": "species",
-                                                "per_page": 500, "page": page})
+                                                "per_page": 500, "page": page,
+                                                "locale": "en", "preferred_place_id": name_place})
                     req = urllib.request.Request(f"{API}?{q}", headers={"User-Agent": USER_AGENT})
                     with urllib.request.urlopen(req, timeout=30) as r:
                         data = json.loads(r.read())
                     for row in data.get("results", []):
                         species[row["taxon"]["name"]] = int(row.get("count", 1))
+                        if row["taxon"].get("preferred_common_name"):
+                            names[row["taxon"]["name"]] = row["taxon"]["preferred_common_name"]
                     if page * 500 >= data.get("total_results", 0):
                         break
                     page += 1
                     time.sleep(1.0)                 # be gentle with the public API
                 groups.append(group)
                 time.sleep(1.0)
-            out = {"iso": iso, "name": c["name"], "fetched": time.time(),
+            out = {"iso": iso, "name": c["name"], "fetched": time.time(), "names": names,
+                   "names_from": NAMES_ISO,
                    "groups": groups, "species": species}
             self.dir.mkdir(parents=True, exist_ok=True)
             tmp = self._path(iso).with_suffix(".tmp")
@@ -187,6 +201,30 @@ def group_of(taxonomy: list[str]) -> Optional[str]:
     return None
 
 
+def _both_spellings(data: dict) -> dict:
+    """A few species are in the AI's list twice (Dendrocopos / Dendrocopus major)
+    and only the kept spelling is used; iNaturalist may use the other. The
+    country's list answers to both (in memory only)."""
+    if not isinstance(data, dict) or data.get("_both"):
+        return data
+    try:
+        import reviewer_species
+        model = reviewer_species._model          # (only once loaded: never loads it)
+    except Exception:
+        model = None
+    same_as = getattr(model, "same_as", None)
+    if not same_as:
+        return data
+    for k in ("species", "names"):
+        d = data.get(k)
+        if isinstance(d, dict):
+            for other, kept in same_as.items():
+                if other in d and kept not in d:
+                    d[kept] = d[other]
+    data["_both"] = True
+    return data
+
+
 def region_weight(scientific: str, group: Optional[str], region: Optional[dict]) -> float:
     """How much a region changes a species suggestion's weight."""
     if not region or group not in region.get("groups", []):
@@ -197,5 +235,11 @@ def region_weight(scientific: str, group: Optional[str], region: Optional[dict])
         return IN_REGION * (1 + min(1.0, math.log10(species[scientific] + 1) / 4))
     genus = scientific.split(" ")[0]
     if any(s.startswith(genus + " ") for s in species):
-        return 1.0               # taxonomies differ (splits/lumps): don't hide it
-    return NOT_IN_REGION
+        # taxonomies differ (splits/lumps): don't hide it (unless it's a mammal & co.)
+        return SAME_GENUS_BY_GROUP.get(group, 1.0)
+    return NOT_IN_REGION_BY_GROUP.get(group, NOT_IN_REGION)
+
+
+def out_of_range(group: Optional[str]) -> str:
+    """How to read 'not recorded in X' for a type of animal."""
+    return "a vagrant?" if group in VAGRANT_GROUPS else "very unlikely there"

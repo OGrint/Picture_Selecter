@@ -91,6 +91,8 @@ Everything runs on your own computer: no cloud, no subscription, and nothing is 
 - **100 % zoom** (Z) centred on the mouse, with drag-to-pan
 
 ### Speed
+- **Collect Best folders** into one library: Year / YYYY-MM Trip / Species, with each photo's Topaz and darktable versions labelled beside it (`_topaz`, `_final`); only the final re-screen of each trip; copies only; preview before anything is copied; re-running adds only what's new
+- **Species list from archive**: every photo under a folder → one photo of each species per country saved in a *Species list* folder inside it (Country / Group / *Name (Scientific)_date*) plus CSV lists; your IDs first, else AI re-ranked by the country's species list; British English names, with odd AI names flagged; uncertain ones in *To clarify* with the top guesses; country from folder names or XMP, else you set it; **Review…** in the app (pick a guess, type your own, remove duplicates, optional reason; remembered next time, and the AI learns from your decisions with a tested, soft few-shot adapter); resumable, copies only
 - **Import from card**: saved Everyday / Holiday destinations, folders per day / week / month / one folder, a label per folder typed while it copies, optional verified backup copy, first folder opens for culling while the rest copies, never copies a file twice
 - **Sightings view** (V): bursts of the same animal grouped into one sighting (by species and time gap); every frame shown, nothing auto-tagged, species confirmed once per sighting
 - **Rename folder** from the folder list — tags, caches and settings follow
@@ -137,6 +139,7 @@ rawpy
 imagehash
 send2trash
 numpy
+openpyxl        # optional — the species list's Excel workbook
 onnxruntime     # optional — AI features (animal detection, species, keeper, search)
 openvino, onnx  # optional — run the AI models on Intel graphics (about 2× faster)
 ```
@@ -144,12 +147,12 @@ openvino, onnx  # optional — run the AI models on Intel graphics (about 2× fa
 Install with conda (recommended for rawpy):
 
 ```bash
-conda install -c conda-forge pillow rawpy imagehash send2trash numpy
+conda install -c conda-forge pillow rawpy imagehash send2trash numpy openpyxl
 pip install customtkinter onnxruntime
 pip install openvino onnx     # optional: graphics-chip acceleration
 ```
 
-The AI features use files in the `models` folder (about 1 GB in total):
+The AI features use files in the `models` folder (about 950 MB in total):
 
 | File | Used for |
 |---|---|
@@ -172,7 +175,7 @@ cd <program folder>
 python photo_reviewer.py
 ```
 
-No build step: code changes take effect the next time you start it. For a desktop shortcut without a console window, and for setting up a new environment, see [Installation](docs/installation.md).
+Or double-click `run_photo_reviewer.bat`. In VS Code, use the **Photo Reviewer** run configuration, or select the `Photo` environment as the interpreter: other Pythons on the computer don't have the app's packages. No build step: code changes take effect the next time you start it. For a desktop shortcut without a console window, and for setting up a new environment, see [Installation](docs/installation.md).
 
 ---
 
@@ -196,6 +199,7 @@ Only needed for a PC without Python. The installer hasn't been rebuilt since the
 | 1–5 · 0 | Star rating · clear |
 | N | Accept the suggested species |
 | Tab | Next unreviewed |
+| R | Resume at the furthest tagged image |
 | K | Predicted keeper of the burst |
 | V · G · C | Sightings · gallery · compare |
 | E · H · F · L · Z · P | Eye at 100 % · raw blown highlights · focus peaking · loupe · 100 % zoom · AF point / animal / eye boxes |

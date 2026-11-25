@@ -80,13 +80,28 @@ In `%APPDATA%\PhotoReviewer` (usually `C:\Users\<you>\AppData\Roaming\PhotoRevie
 |---|---|---|
 | `photo_reviewer_settings.json` | App settings ([Settings](settings.md)) | Resets your settings |
 | `import_settings.json` | Import setups | Resets import destinations |
+| `collect_species.json` | Species identified by Collect Best folders (by file, size and date) | Yes: identified again on the next scan (slower) |
+| `species_scan.jsonl` | Species list from archive: capture times and what the models found per photo (by file, size and date), one line each | Yes: everything is read again on the next run (hours for a big archive) |
 | `imported.json` | Record of card files already imported (`name|size|capture time` → copies) | The next import of an old card copies everything again |
 | `photo_reviewer_recent.json` | Recent folders on the start screen | Yes |
 | `keeper_history.npz` | What you picked in past folders: the keeper's training data | **Loses what the keeper learned.** "Learn from past folders…" rebuilds it from folders with Best tags. |
 | `keeper_model.npz` | The trained keeper model | Yes: retrained from the history |
 | `species_history.json` | Species you've confirmed and how often (ranks them higher) | Loses that preference |
-| `regions\<ISO>.json` | Species lists per country from iNaturalist (region hint) | Yes: downloaded again when needed (refreshed yearly anyway) |
+| `regions\<ISO>.json` | Species lists per country from iNaturalist (region hint), with British English common names | Yes: downloaded again when needed (refreshed yearly anyway) |
 | `library\` | Offline copies of the search index for library folders on external drives, plus 192 px thumbnails (about 10 KB per photo) | Yes: rebuilt when the drive is next plugged in; unplugged search stops working until then |
-| `gpu_models\` | Graphics-chip copies of the int8 models (about 800 MB, made once) | Yes: remade in the background (about a minute) |
+| `previews\` | Developed previews of RAW files that have none of their own, e.g. Topaz DNGs (about 2.5 MB each). Without them each look at such a file takes 3–4 s | Yes: developed again when needed |
+| `gpu_models\` | Graphics-chip copies of the int8 models (about 400 MB, made once) | Yes: remade in the background (seconds) |
+
+In a collection made by **Collect Best folders**, `collection.json` records each copied file's source, size, species and trip, so running it again adds only what's new and never renames earlier copies. Don't delete it unless you want everything copied again.
+
+In a list made by **Species list from archive**, `species_list.json` records the photo kept for each species and country, so running it again keeps it. Delete a species' photo to have the best one chosen again. It also holds your **Review…** decisions (`decisions`: the original photo → the species you named, or removed, with your note), which Identify uses next time.
+
+`%APPDATA%\PhotoReviewer\species_list_results\` keeps the last Identify results for each folder (with your Review changes), so Review opens without identifying again. Delete it to forget them.
+
+In the *Species list* folder, `Species list.xlsx` is every list in one workbook (rewritten with the CSVs; if it's open in Excel it's skipped that time). A hidden `.removed` folder holds copies removed in Review until Review closes (for undo); they then go to the Recycle Bin.
+
+`%APPDATA%\PhotoReviewer\inat_photos\<Scientific_name>\` holds the iNaturalist reference photos used by **Compare with iNaturalist** (with `photos.json`: their credits and the species' iNaturalist page). Delete it to download them again.
+
+`%APPDATA%\PhotoReviewer\species_examples.json` holds the photos you've confirmed (in the species list's Review, the main window, or named earlier) as examples the AI learns from (path, species, country, day and place, your note, and the photo's fingerprint: 768 numbers, about 2 KB). It's shared by every species list; delete it to start the learning again. `species_scan.jsonl` now keeps each photo's fingerprint too.
 
 Nothing here contains your photos, apart from the small offline thumbnails in `library\`.

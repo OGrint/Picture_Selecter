@@ -20,12 +20,13 @@ Photo Reviewer is a Python program. On your own computer the simplest way to use
 | `send2trash` | Sending Delete frames to the Recycle Bin | — |
 | `numpy` | Scoring, everything numeric | 2.3.4 |
 | `onnxruntime` | All AI features (optional: without it they are just unavailable) | 1.25.1 |
+| `openpyxl` | Optional: the species list's Excel workbook (the CSVs are written without it) | 3.1.5 |
 | `openvino`, `onnx` | Optional: running the models on the Intel graphics chip | 2026.4.1, 1.23.2 |
 
 ## Setting up from scratch
 
 ```bat
-conda create -n Photo -c conda-forge python=3.12 pillow rawpy imagehash send2trash numpy
+conda create -n Photo -c conda-forge python=3.12 pillow rawpy imagehash send2trash numpy openpyxl
 conda activate Photo
 pip install customtkinter onnxruntime
 pip install openvino onnx
@@ -37,14 +38,14 @@ The paths on your own computer (program folder, Python environment, shortcut tar
 
 ## The model files
 
-The AI features need the files in the `models` folder next to `photo_reviewer.py`, about 1 GB in total. They are not in git (too large), so keep a copy. If one is missing, that feature shows as unavailable and everything else works.
+The AI features need the files in the `models` folder next to `photo_reviewer.py`, about 950 MB in total. They are not in git (too large), so keep a copy. If one is missing, that feature shows as unavailable and everything else works.
 
 | File | Size | Feature |
 |---|---|---|
 | `md_v1000.0.0-spruce_640.onnx` | 29 MB | Animal detection (MegaDetector) |
 | `embed_mobilenet_v3_large.onnx` | 12 MB | Keeper prediction, "same animal" for sightings |
 | `bioclip2_visual_int8.onnx`, `bioclip2_species_emb.npy`, `bioclip2_species.json` | 384 MB | Species suggestions (BioCLIP 2) |
-| `clip_image_int8.onnx`, `clip_text.onnx`, `clip_bpe_vocab.txt.gz` | 345 MB | AI search (OpenCLIP) |
+| `clip_image_int8.onnx`, `clip_text.onnx`, `clip_bpe_vocab.txt.gz` | 218 MB | AI search (OpenCLIP) |
 | `owlv2_eye.onnx` | 308 MB | Eye check (OWLv2) |
 | `regions_countries.json` | 16 KB | Region hint (country list) |
 
@@ -52,11 +53,22 @@ The AI features need the files in the `models` folder next to `photo_reviewer.py
 
 ## Running
 
+The app must run with the Python of your `Photo` environment. Any other Python on the computer (for example a separate python.org install) won't have its packages and fails with `ModuleNotFoundError`.
+
+**Double-click** `run_photo_reviewer.bat` in the program folder. It starts the app, without a console window, using the `pythonw` path in `local_setup.ini`.
+
+**From a prompt:**
+
 ```bat
 conda activate Photo
 cd <program folder>
 python photo_reviewer.py
 ```
+
+**From VS Code:**
+- **Run it:** use the **Photo Reviewer** run configuration (Run and Debug, or F5). It always uses the `Photo` environment, set in `.vscode/launch.json`.
+- **The ▷ "Run Python File" button:** it uses whichever Python VS Code has selected for the folder. Choose it once: Ctrl+Shift+P → **Python: Select Interpreter** → the `Photo` environment.
+- **Not committed:** `.vscode/` holds this computer's paths, so git ignores it.
 
 The start screen lists recent folders, and has buttons to open a folder or **import from a card**.
 

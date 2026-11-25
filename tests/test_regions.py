@@ -17,7 +17,18 @@ class WeightTests(unittest.TestCase):
         self.assertGreater(rr.region_weight("Ardea cinerea", "birds", self.REGION), 3.0)
 
     def test_unrecorded_species_pushed_down(self):
-        self.assertEqual(rr.region_weight("Ara macao", "birds", self.REGION), rr.NOT_IN_REGION)
+        self.assertLess(rr.region_weight("Ara macao", "birds", self.REGION), 1.0)
+
+    def test_birds_can_be_vagrants_mammals_hardly_ever(self):
+        bird = rr.region_weight("Ara macao", "birds", self.REGION)
+        mammal = rr.region_weight("Panthera leo", "mammals", self.REGION)
+        self.assertGreater(bird, 10 * mammal)
+        self.assertEqual(rr.out_of_range("birds"), "a vagrant?")
+        self.assertEqual(rr.out_of_range("mammals"), "very unlikely there")
+        # a relative recorded there: neutral for a bird (taxonomies differ),
+        # but for a mammal the recorded relative is far likelier (Red Deer, not Elk)
+        self.assertEqual(rr.region_weight("Ardea herodias", "birds", self.REGION), 1.0)
+        self.assertLess(rr.region_weight("Vulpes lagopus", "mammals", self.REGION), 0.5)
 
     def test_same_genus_kept_neutral(self):          # taxonomy splits / lumps
         self.assertEqual(rr.region_weight("Ardea herodias", "birds", self.REGION), 1.0)

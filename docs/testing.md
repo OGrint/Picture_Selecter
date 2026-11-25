@@ -55,4 +55,4 @@ Unit tests don't drive the window. After a change to the UI or the background pa
 ## Known test quirks
 
 - **The keeper's pick accuracy on synthetic test data varies from run to run** (about 14–20 of 20) depending on when the training snapshot is taken. It isn't a correctness problem, but don't read much into one result.
-- **The first time a fresh settings folder sees the graphics chip,** it makes the fp16 model copies (about a minute) and can briefly freeze the window (1–5 s). This also happens without the new features; it's a known issue that isn't fixed yet.
+- **The first time a fresh settings folder sees the graphics chip,** it makes the weight-only int8 model copies (a few seconds) and can briefly freeze the window (1–5 s). This also happens without the new features; it's a known issue that isn't fixed yet.

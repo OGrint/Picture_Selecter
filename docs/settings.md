@@ -30,6 +30,7 @@ Example:
 |---|---|---|
 | `graphics_acceleration` | `true` | Run the AI models on the Intel graphics chip when there is one. `false` keeps everything on the CPU. The environment variable `PHOTO_REVIEWER_GPU=0` does the same for one run. |
 | `eye_check` | `true` | Find the animal's eye and compare its sharpness within bursts. `false` turns the eye pass off completely (no model loaded). |
+| `raw_clip_external` | `"viewed"` | Raw highlight clipping reads each whole NEF. On an external (USB) drive that's about a second of drive time per photo, so there it's done only for the photo on screen and Best-tagged photos. `"all"` reads every frame there too, which is slower and competes with the viewer. On the internal drive, every frame is always read. |
 | `detect_animals` | `true` | Run MegaDetector. `false` turns off the animal-based suggestions, sharpness on the animal, raw clipping on the animal (the frame figure is still given) and the eye check, which needs the animal. |
 | `af_grid_width`, `af_grid_height` | not set | Correct the position of the drawn AF point (P key) if it is consistently offset for your camera. Viewfinder AF positions are worked out from the AF grid; these override its size. |
 | `topaz_path` | `C:\Program Files\Topaz Labs LLC\Topaz Photo AI\Topaz Photo AI.exe` | The Topaz program used by Send to Topaz. The app asks for it if it isn't there, and saves your choice here. |
@@ -48,6 +49,12 @@ Example:
 | `sighting_gap` | `180` | Sightings view: seconds without photos that start a new sighting. One of 60, 180, 300, 600, 1800, 3600. |
 | `sightings_show_pick` | `true` | Sightings view: show the app's predicted pick ◆ |
 | `last_search` | `""` | The last AI search typed |
+| `collect_parent`, `collect_dest` | `""` | Collect Best folders: the folder last searched and the collection folder |
+| `collect_identify` | `true` | Collect Best folders: identify the species of photos the app hasn't named |
+| `species_list_parent` | `""` | Species list from archive: the folder last read (the list is saved in its *Species list* folder) |
+| `species_list_per_guess` | `"7"` | Species list: photos copied to *To clarify* per best guess per country (`"1"`, `"3"`, `"7"`, `"10"`, `"All"`) |
+| `species_list_sure` | `"80%"` | Species list: how probable an AI ID must be to count as certain |
+| `species_list_countries` | `{}` | Species list: the country you set per folder (`""` = not known) |
 | `library_roots` | `[]` | AI search / ID inbox library folders: a list of `{"path", "volume", "label"}`. `volume` is the drive's serial number, used to find an external drive again when Windows gives it a different letter. |
 | `library_root` | — | The first library folder (kept for older versions) |
 | `import_dest`, `import_backup`, `import_verify` | — | From older versions; copied into the Everyday import setup once, then no longer used |

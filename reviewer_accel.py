@@ -326,7 +326,7 @@ def _gpu_model_file(r: Runner) -> Optional[Path]:
     base = _cache_dir or Path(os.environ.get("APPDATA", Path.home())) / "PhotoReviewer"
     folder = base / "gpu_models"
     st = r.path.stat()
-    out = folder / f"{r.path.stem}.{st.st_size}.{int(st.st_mtime)}.onnx"
+    out = folder / f"{r.path.stem}.w8.{st.st_size}.{int(st.st_mtime)}.onnx"   # (w8: weight-only int8)
     if out.exists():
         return out
     try:
@@ -389,8 +389,11 @@ def main(argv: list[str]) -> int:
 def dequantize_model(src: Path, dst: Path) -> int:
     """
     Rewrite onnxruntime dynamic-int8 layers (DynamicQuantizeLinear →
-    MatMulInteger/ConvInteger → Cast → Mul) as plain float MatMul/Conv with
-    fp16 weights. Returns the number of layers rewritten.
+    MatMulInteger/ConvInteger → Cast → Mul) as float MatMul/Conv whose weights
+    stay int8 behind a DequantizeLinear ("weight-only" int8). The graphics chip
+    then works in fp16 — the int8 *activations* were what overflowed there —
+    while OpenVINO keeps the weights compressed, so the copy is about the size of
+    the original instead of twice it. Returns the number of layers rewritten.
     """
     import onnx
     from onnx import helper, numpy_helper
@@ -422,17 +425,23 @@ def dequantize_model(src: Path, dst: Path) -> int:
         if dql.op_type != "DynamicQuantizeLinear" or cast.op_type != "Cast" or mul.op_type != "Mul":
             raise ValueError(f"unexpected int8 pattern at {n.name}")
         smul = prod[next(i for i in mul.input if i != cast.output[0])]
-        ws = val(next(i for i in smul.input if i != dql.output[1])).astype(np.float32)
-        wq = val(n.input[1]).astype(np.float32)
-        wz = val(n.input[3]).astype(np.float32) if len(n.input) > 3 and n.input[3] else 0.0
-        if n.op_type == "ConvInteger":              # per-output-channel scales
-            shape = (-1,) + (1,) * (wq.ndim - 1)
-            ws = ws.reshape(shape) if np.ndim(ws) else ws
-            wz = np.reshape(wz, shape) if np.ndim(wz) else wz
-        w = ((wq - wz) * ws).astype(np.float16)
-        wn = f"{n.name or n.op_type}_{len(repl)}_wf16"
-        new_inits.append(numpy_helper.from_array(w, wn))
-        to32 = helper.make_node("Cast", [wn], [wn + "_f32"], to=onnx.TensorProto.FLOAT)
+        ws = np.asarray(val(next(i for i in smul.input if i != dql.output[1])), np.float32)
+        wq = np.asarray(val(n.input[1]))                       # int8 / uint8, kept as is
+        if len(n.input) > 3 and n.input[3]:
+            wz = np.asarray(val(n.input[3])).astype(wq.dtype)
+        else:
+            wz = np.zeros(ws.shape, wq.dtype)
+        wn = f"{n.name or n.op_type}_{len(repl)}_w8"
+        ws, wz = ws.reshape(-1) if ws.size > 1 else ws.reshape(()), \
+            wz.reshape(-1) if wz.size > 1 else wz.reshape(())
+        new_inits += [numpy_helper.from_array(wq, wn + "_q"),
+                      numpy_helper.from_array(ws, wn + "_scale"),
+                      numpy_helper.from_array(np.broadcast_to(wz, ws.shape).copy(), wn + "_zp")]
+        extra = {}
+        if ws.ndim == 1:                     # per channel: Conv out-channels, MatMul columns
+            extra["axis"] = 0 if n.op_type == "ConvInteger" else 1
+        to32 = helper.make_node("DequantizeLinear", [wn + "_q", wn + "_scale", wn + "_zp"],
+                                [wn + "_f32"], name=wn + "_dq", **extra)
         if n.op_type == "MatMulInteger":
             op = helper.make_node("MatMul", [dql.input[0], wn + "_f32"], [mul.output[0]],
                                   name=wn + "_float")

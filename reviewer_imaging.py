@@ -12,6 +12,9 @@ import math
 import logging
 import os
 import struct
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -54,6 +57,92 @@ _EXIF_ORIENTATION: dict[int, object] = {
     7: (Image.FLIP_LEFT_RIGHT, 270),
     8: 90,
 }
+
+
+# ── Disk priority ─────────────────────────────────────────────────────────────
+# On a USB hard drive, several threads reading at once make the heads jump
+# between files and every read waits behind the others, including the photo
+# you're trying to look at. So, on drives other than the system drive:
+#   - background passes read one file at a time (per drive);
+#   - they wait while the viewer is reading, and for a moment after it.
+# Reads from the system drive (usually an SSD) are never held back.
+
+_SYSTEM_DRIVE = (os.environ.get("SystemDrive") or "C:").upper()
+_FG_GRACE = 0.4                 # s of quiet after a viewer read before background resumes
+_fg_cv = threading.Condition()
+_fg_count = 0
+_fg_last = 0.0
+_drive_locks: dict[str, threading.RLock] = {}
+_drive_guard = threading.Lock()
+_hold = 0                       # > 0 while Process runs: background reads on slow drives wait
+
+
+def slow_drive(path: str) -> bool:
+    """True for paths not on the system drive (external disks, network shares)."""
+    drive = os.path.splitdrive(os.path.abspath(path))[0].upper()
+    if drive.startswith("\\\\"):
+        return True
+    return bool(drive) and drive != _SYSTEM_DRIVE
+
+
+@contextmanager
+def foreground_read():
+    """Wrap reads the user is waiting for (viewer, preload, zoom, thumbnails)."""
+    global _fg_count, _fg_last
+    with _fg_cv:
+        _fg_count += 1
+    try:
+        yield
+    finally:
+        with _fg_cv:
+            _fg_count -= 1
+            _fg_last = time.monotonic()
+            _fg_cv.notify_all()
+
+
+@contextmanager
+def background_read(path: str, max_wait: float = 30.0):
+    """Wrap reads by background passes: one at a time per slow drive, after the viewer."""
+    if not slow_drive(path):
+        yield
+        return
+    drive = os.path.splitdrive(os.path.abspath(path))[0].upper()
+    with _drive_guard:
+        lock = _drive_locks.setdefault(drive, threading.RLock())
+    with lock:
+        deadline = time.monotonic() + max_wait          # never starve the background for good
+        with _fg_cv:
+            while _hold > 0 or (time.monotonic() < deadline and (
+                    _fg_count > 0 or time.monotonic() - _fg_last < _FG_GRACE)):
+                _fg_cv.wait(0.1)
+        yield
+
+
+@contextmanager
+def hold_background():
+    """Pause background reads on slow drives completely (e.g. while Process copies)."""
+    global _hold
+    with _fg_cv:
+        _hold += 1
+    try:
+        yield
+    finally:
+        with _fg_cv:
+            _hold -= 1
+            _fg_cv.notify_all()
+
+
+def read_file_background(path: str, chunk: int = 4 << 20) -> bytes:
+    """A whole file read by a background pass, in chunks so the viewer can get in between."""
+    parts = []
+    with open(path, "rb") as f:
+        while True:
+            with background_read(path):
+                b = f.read(chunk)
+            if not b:
+                break
+            parts.append(b)
+    return b"".join(parts)
 
 
 # ── EXIF ──────────────────────────────────────────────────────────────────────
@@ -498,7 +587,7 @@ def _oriented(mask, flip: int):
     return np.rot90(mask, k) if k else mask
 
 
-def raw_clip_mask(path: str, step: int = RAW_CLIP_STEP):
+def raw_clip_mask(path: str, step: int = RAW_CLIP_STEP, background: bool = False):
     """
     (mask, values) for a RAW file, oriented like the preview: mask holds the
     clipped-channel bits per sampled Bayer quad, values the brightest channel
@@ -508,7 +597,9 @@ def raw_clip_mask(path: str, step: int = RAW_CLIP_STEP):
     if not (_RAWPY_AVAILABLE and _NUMPY_AVAILABLE) or Path(path).suffix.lower() not in RAW_EXTS:
         return None
     try:
-        with rawpy.imread(path) as raw:
+        # background passes on a slow drive read the file in polite chunks first
+        src = io.BytesIO(read_file_background(path)) if background and slow_drive(path) else path
+        with rawpy.imread(src) as raw:
             a = raw.raw_image_visible
             pattern = raw.raw_pattern
             desc = raw.color_desc.decode("ascii", "replace")
@@ -591,7 +682,7 @@ def raw_clipping(path: str, subject=None) -> Optional[dict]:
            exposed before its brightest 0.1 % clipped (0 when clipped)
     None for files this can't read.
     """
-    got = raw_clip_mask(path)
+    got = raw_clip_mask(path, background=True)
     if got is None:
         return None
     mask, top = got
@@ -668,9 +759,49 @@ def _open_thumb_unoriented(path: str) -> Image.Image:
                        if tb.format == rawpy.ThumbFormat.JPEG
                        else Image.fromarray(tb.data))
             except rawpy.LibRawNoThumbnailError:
-                img = Image.fromarray(raw.postprocess(half_size=True))
+                img = None
+        if img is None:
+            img = _developed_preview(path)
         return img
     return Image.open(path)
+
+
+# RAW files without an embedded preview (e.g. Topaz DNGs) have to be developed to
+# be seen: 3–4 s for a 45 MP file, and preparation, analysis, thumbnails and the
+# viewer each look at a photo. So each is developed once into a JPEG kept in
+# %APPDATA%\PhotoReviewer\previews (by file, size and date).
+_dev_locks: dict[str, threading.Lock] = {}
+_dev_guard = threading.Lock()
+
+
+def _preview_cache_dir() -> Path:
+    base = os.environ.get("APPDATA") or str(Path.home())
+    return Path(base) / "PhotoReviewer" / "previews"
+
+
+def _developed_preview(path: str) -> Image.Image:
+    import hashlib
+    st = os.stat(path)
+    key = hashlib.sha1(f"{os.path.normcase(os.path.abspath(path))}|{st.st_size}|{int(st.st_mtime)}"
+                       .encode()).hexdigest()
+    cached = _preview_cache_dir() / f"{key}.jpg"
+    with _dev_guard:
+        lock = _dev_locks.setdefault(key, threading.Lock())
+    with lock:                                 # two threads, one development
+        if not cached.exists():
+            with rawpy.imread(path) as raw:
+                img = Image.fromarray(raw.postprocess(half_size=True))
+            img.thumbnail((4096, 4096), Image.LANCZOS)      # (linear DNGs ignore half_size)
+            try:
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                tmp = cached.with_suffix(".tmp")
+                img.save(tmp, "JPEG", quality=90)
+                os.replace(tmp, cached)
+            except OSError as e:
+                log.debug("Could not cache the developed preview of %s: %s", path, e)
+                return img
+    # opened, not loaded: callers can still ask for a reduced-size JPEG decode
+    return Image.open(cached)
 
 
 def _extract_thumb_img(path: str) -> Image.Image:
@@ -678,15 +809,17 @@ def _extract_thumb_img(path: str) -> Image.Image:
     return auto_orient(_open_thumb_unoriented(path))
 
 
-def load_preview(path: str, min_side: int) -> Image.Image:
+def load_preview(path: str, min_side: int, box: Optional[tuple[int, int]] = None) -> Image.Image:
     """
-    Oriented image whose sides are at least min_side where the source
-    allows. JPEG data (including RAW-embedded previews) is decoded at a
-    reduced scale — several times faster than a full-size decode.
+    Oriented image whose sides are at least min_side (or, with box=(long, short),
+    at least that long side by short side) where the source allows. JPEG data
+    (including RAW-embedded previews) is decoded at a reduced scale — several
+    times faster than a full-size decode. A box lets a 1900×1000 window get a
+    quarter-size decode of a D850 preview instead of a half-size one.
     """
     img = _open_thumb_unoriented(path)
     if getattr(img, "format", None) == "JPEG":
-        img.draft("RGB", (min_side, min_side))
+        img.draft("RGB", box or (min_side, min_side))
     return auto_orient(img)
 
 

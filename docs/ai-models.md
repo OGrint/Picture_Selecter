@@ -37,7 +37,8 @@ Not AI, but in the same analysis: **sharpness** (edge strength where the camera 
 
 - **Coverage:** birds, mammals, reptiles, amphibians, dragonflies and butterflies worldwide: 48,155 species, cut down from BioCLIP 2's Tree of Life list.
 - **How it runs:** once per burst, on the animal crop of a 1,600 px copy.
-- **Ranking:** the raw top 25 are re-ranked by your confirmed species (`species_history.json`) and the region hint. Species recorded in the folder's country get 3× weight; species from a covered group never recorded there get 0.15×. Unusual ones are flagged.
+- **Ranking:** the raw top 25 are re-ranked by your confirmed species (`species_history.json`) and the region hint. Species recorded in the folder's country get 3× weight. Species never recorded there are weighted by type: birds 0.3× (vagrants do turn up: flagged *a vagrant?*), dragonflies and butterflies 0.15×, mammals 0.02× and reptiles and amphibians 0.04× (*very unlikely there*). A mammal not recorded there whose genus is (an Elk where Red Deer live) gets 0.25×; for a bird that's left neutral, as bird taxonomies often differ. Unusual ones are flagged.
+- **Learning from you (species list):** photos you confirm in the species list's Review become examples (BioCLIP's image fingerprint + your answer). A few-shot cache adapter (as in Tip-Adapter) adds a pull towards the species of the examples a photo resembles, weighted by similarity. Its strength is fitted by testing on held-out days of your own decisions, and it stays off if it doesn't help. The model itself isn't changed. See `reviewer_refine.py`.
 
 ### AI search (OpenCLIP)
 
@@ -75,7 +76,7 @@ With `openvino` and `onnx` installed and an Intel graphics chip present (`graphi
 
 1. **Start-up:** every model starts on the CPU, so analysis begins immediately.
 2. **Preparing a copy:** in the background, each model is compiled for the graphics chip (fp16).
-   - **int8 models** (species, search) can't run there as they are: their integer arithmetic overflows in fp16. They're first converted to fp16 weights in a separate helper process, once, and saved in `%APPDATA%\PhotoReviewer\gpu_models` (about 800 MB).
+   - **int8 models** (species, search) can't run there as they are: their 8-bit arithmetic overflows in fp16. A copy is made once, in a separate helper process, with the weights still 8-bit but the arithmetic in fp16 ("weight-only int8"). It's saved in `%APPDATA%\PhotoReviewer\gpu_models` and takes about 400 MB, the same size as the originals.
 3. **Switching over:** a model is switched to the graphics chip only if its output agrees with the CPU (cosine ≥ 0.95) and it's at least 1.15× faster. Otherwise it stays on the CPU, so results are the same either way.
 4. **Fallback:** if the graphics chip fails later (driver reset), that model goes back to the CPU for the rest of the session.
 
@@ -91,7 +92,9 @@ The header shows **preparing graphics chip…** and then **using graphics chip**
 
 ## Region hint data
 
-`regions_countries.json` maps each country to its iNaturalist place id. When you use the region hint for a country, the app downloads that country's species list once from iNaturalist (`api.inaturalist.org/v1/observations/species_counts`), saves it in `%APPDATA%\PhotoReviewer\regions\` and refreshes it after a year. That's the only network access the app makes. The request contains only the place id and taxon group, nothing about you or your photos.
+`regions_countries.json` maps each country to its iNaturalist place id. When you use the region hint for a country, the app downloads that country's species list once from iNaturalist (`api.inaturalist.org/v1/observations/species_counts`), saves it in `%APPDATA%\PhotoReviewer\regions\` and refreshes it after a year. The same download brings each species' British English common name, used by the species list. The request contains only the place id and taxon group, nothing about you or your photos.
+
+The only other network access is **Compare with iNaturalist** in the species list's Review: it looks up the species by its scientific name (`api.inaturalist.org/v1/taxa`) and downloads up to 6 of the photos iNaturalist shows for it, with their credits. Only the scientific name is sent. The photos are kept in `%APPDATA%\PhotoReviewer\inat_photos\`, so each species is downloaded once. They're shown only for comparison and never copied into your lists.
 
 ## Rebuilding the models
 
