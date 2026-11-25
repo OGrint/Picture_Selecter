@@ -160,7 +160,8 @@ class SpeciesReviewWindow(ctk.CTkToplevel):
                                ("✓ Confirm, use this photo  (Shift+Enter)", lambda: self._confirm(True),
                                 C_BORDER),
                                ("✕ Remove  (Del)", self._reject, C_BAD),
-                               ("Open the original  (V)", self._open_original, C_BORDER)):
+                               ("Open the original  (V)", self._open_original, C_BORDER),
+                               ("Show original in folder  (O)", self._show_folder, C_BORDER)):
             b = tk.Button(right, text=text, bg=col, fg="white", relief="flat", bd=0,
                           font=("Helvetica", 10, "bold"), command=cmd)
             b.pack(fill="x", padx=12, pady=(8, 0), ipady=3)
@@ -551,16 +552,30 @@ class SpeciesReviewWindow(ctk.CTkToplevel):
         self._imgs.clear()
         self._reload()
 
+    def _original(self) -> Optional[str]:
+        """The original of the frame shown (on the drive's current letter)."""
+        if not self._items:
+            return None
+        frames = self._frames(self._items[self._i])
+        path = frames[self._frame % len(frames)]
+        if self._frame % len(frames) == 0:
+            path = self._ed.pick(self._items[self._i]).pick.path
+        return sl.find_original(path)
+
     def _open_original(self) -> None:
-        if self._items:
-            frames = self._frames(self._items[self._i])
-            path = frames[self._frame % len(frames)]
-            if self._frame % len(frames) == 0:
-                path = self._ed.pick(self._items[self._i]).pick.path
-            try:
-                os.startfile(path)                     # (Windows)
-            except (OSError, AttributeError):
-                pass
+        path = self._original()
+        if not path:
+            self._state.configure(text="The original isn't there (is the drive plugged in?)", fg=C_WARN)
+            return
+        try:
+            os.startfile(path)                     # (Windows)
+        except (OSError, AttributeError):
+            pass
+
+    def _show_folder(self) -> None:
+        path = self._original()
+        if not path or not sl.show_in_folder(path):
+            self._state.configure(text="The original isn't there (is the drive plugged in?)", fg=C_WARN)
 
     def _key(self, e) -> Optional[str]:
         try:
@@ -594,6 +609,8 @@ class SpeciesReviewWindow(ctk.CTkToplevel):
             self._reject()
         elif ks in ("v", "V"):
             self._open_original()
+        elif ks in ("o", "O"):
+            self._show_folder()
         elif ks in ("g", "G"):
             self._side.set(not self._side.get())
             self._option_changed()

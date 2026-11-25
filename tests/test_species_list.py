@@ -344,6 +344,68 @@ class SpeciesListTests(unittest.TestCase):
         self.assertEqual(have["KE|Panthera leo"], lion.dest)
         self.assertEqual(have["ES|Lynx pardinus"], os.path.relpath(earlier, self.dest))
 
+    def test_raw_photos_become_jpegs(self):
+        import reviewer_imaging
+        self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
+        _p, _pl, res = self._run()
+        entries, clarify = sl.build(res["sightings"])
+        big = Image.new("RGB", (3000, 2000), (200, 120, 40))         # (the NEF's embedded preview)
+        with mock.patch.object(reviewer_imaging, "load_preview", return_value=big):
+            out = sl.copy_list(entries, clarify, self.dest, jpeg=True)
+        self.assertEqual(out["errors"], [])
+        hoopoe = [e for e in entries if e.species == "Hoopoe" and e.iso == "ES"][0]
+        self.assertTrue(hoopoe.dest.endswith(".jpg"))
+        with Image.open(os.path.join(self.dest, hoopoe.dest)) as im:
+            self.assertEqual((im.format, im.size), ("JPEG", (3000, 2000)))
+            ex = im.getexif()
+            self.assertEqual(ex.get(0x010E), "Hoopoe (Upupa epops)")
+            self.assertTrue(ex.get_ifd(0x8769).get(36867))             # capture time kept
+            # where it came from, in the Comments Windows shows
+            comment = bytes(ex.get(0x9C9C)).decode("utf-16-le").rstrip("\0")
+            self.assertEqual(comment, f"Original: {hoopoe.pick.pick.path}")
+        # the workbook links to the original, its folder and the list's copy
+        from openpyxl import load_workbook
+        wb = load_workbook(os.path.join(self.dest, sl.WORKBOOK))
+        self.addCleanup(wb.close)
+        ws = wb["All species"]
+        head = [c.value for c in ws[1]]
+        row = next(r for r in ws.iter_rows(min_row=2) if r[head.index("Common name")].value == "Hoopoe"
+                   and r[0].value == "Spain")
+        self.assertEqual(row[head.index("Original")].hyperlink.target, hoopoe.pick.pick.path)
+        self.assertEqual(row[head.index("Original folder")].hyperlink.target,
+                         os.path.dirname(hoopoe.pick.pick.path))
+        self.assertEqual(row[head.index("Photo kept")].hyperlink.target, hoopoe.dest)
+        lynx = [e for e in entries if e.species == "Iberian Lynx"][0]
+        self.assertTrue(lynx.dest.endswith(".JPG"))                    # (a JPEG is copied as it is)
+        self.assertTrue(sl.load_list(self.dest)["jpeg"])
+        self.assertFalse(any(f.endswith(".part") for f in self._files()))
+        # again: nothing made twice; Review keeps making JPEGs for this list
+        _p, _pl, res = self._run()
+        entries2, clarify2 = sl.build(res["sightings"])
+        self.assertEqual(sl.copy_list(entries2, clarify2, self.dest)["copied"], 0)
+        self.assertTrue(sl.ListEditor(entries2, clarify2, self.dest, trash=os.remove).jpeg)
+
+    def test_original_found_on_another_drive_letter(self):
+        self.assertEqual(sl.find_original(self.hoopoe), self.hoopoe)
+        moved = "Q" + self.hoopoe[1:] if self.hoopoe[0].upper() != "Q" else "R" + self.hoopoe[1:]
+        self.assertEqual(sl.find_original(moved).lower(), self.hoopoe.lower())   # (the drive's new letter)
+        self.assertIsNone(sl.find_original(os.path.join(self.root, "gone.NEF")))
+        with mock.patch("subprocess.Popen") as popen:
+            self.assertTrue(sl.show_in_folder(moved))
+            self.assertEqual(popen.call_args[0][0][:2], ["explorer", "/select,"])
+            self.assertFalse(sl.show_in_folder(os.path.join(self.root, "gone.NEF")))
+
+    def test_raw_copies_already_in_a_list_stay(self):
+        self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
+        _p, _pl, res = self._run()
+        entries, clarify = sl.build(res["sightings"])
+        sl.copy_list(entries, clarify, self.dest)                       # (made before: RAW copies)
+        before = self._files()
+        _p, _pl, res = self._run()
+        entries, clarify = sl.build(res["sightings"])
+        self.assertEqual(sl.copy_list(entries, clarify, self.dest, jpeg=True)["copied"], 0)
+        self.assertEqual(self._files(), before)
+
     def test_organised_by_type_species_and_year(self):
         self.results["DSC_0100.NEF"] = self.results["DSC_0100.JPG"]
         _p, _pl, res = self._run()

@@ -110,6 +110,9 @@ class SpeciesListDialog(ctk.CTkToplevel):
         self._review_btn = ctk.CTkButton(opts, text="4  Review…", width=110, state="disabled",
                                          command=self._review)
         self._review_btn.pack(side="right")
+        self._jpeg = tk.BooleanVar(value=bool(self._settings.get("species_list_jpeg", True)))
+        ctk.CTkCheckBox(opts, text="RAW as JPEG", variable=self._jpeg, width=20,
+                        command=self._jpeg_changed).pack(side="right", padx=(10, 0))
         self._copy_btn = ctk.CTkButton(opts, text="3  Copy list", width=120, state="disabled",
                                        command=self._copy)
         self._copy_btn.pack(side="right", padx=6)
@@ -164,6 +167,7 @@ class SpeciesListDialog(ctk.CTkToplevel):
         self._rtree.tag_configure("kept", foreground=C_MUTED)
         self._pack_tree(f2, self._rtree)
         self._rtree.bind("<Double-1>", self._open_original)
+        self._rtree.bind("<Button-3>", self._row_menu)
 
         bottom = ctk.CTkFrame(self, fg_color="transparent")
         bottom.pack(fill="x", padx=16, pady=(0, 12))
@@ -358,15 +362,16 @@ class SpeciesListDialog(ctk.CTkToplevel):
             self._identifier = sl.Identifier(str(_user_data_dir()), sure)
         countries_of = {p: self._country(p)[0] for p in self._places}
         per_guess = None if self._per_guess.get() == "All" else int(self._per_guess.get())
-        self._start(self._identify_work, list(self._photos), countries_of, got[0], got[1], per_guess)
+        self._start(self._identify_work, list(self._photos), countries_of, got[0], got[1], per_guess,
+                    self._jpeg.get())
 
-    def _identify_work(self, photos, countries_of, parent, dest, per_guess) -> None:
+    def _identify_work(self, photos, countries_of, parent, dest, per_guess, jpeg) -> None:
         try:
             res = self._identifier.run(photos, countries_of, parent,
                                        progress=lambda d: self._q.put(("ident", d)), stop=self._stop,
                                        decisions=sl.load_list(dest).get("decisions"))
             entries, clarify = sl.build(res["sightings"], per_guess, name_of=self._identifier.local_name)
-            sl.plan_copies(entries, clarify, dest)            # (Tk is only read on its own thread)
+            sl.plan_copies(entries, clarify, dest, jpeg)      # (Tk is only read on its own thread)
             self._q.put(("identified", (res, entries, clarify)))
         except Exception as e:
             self._q.put(("error", f"Identifying failed: {e}"))
@@ -375,6 +380,7 @@ class SpeciesListDialog(ctk.CTkToplevel):
         self._res, self._entries, self._clarify = res, entries, clarify
         self._rtree.delete(*self._rtree.get_children())
         self._rpath: dict[str, str] = {}
+        self._rcopy: dict[str, str] = {}
         by_country = defaultdict(lambda: ([], []))
         for e in entries:
             by_country[sl.country_name(e.iso)][0].append(e)
@@ -399,6 +405,7 @@ class SpeciesListDialog(ctk.CTkToplevel):
                                 ("already there: " if e.kept else "") + e.dest),
                         tags=("kept",) if e.kept else ("unsure",) if e.name_note.startswith("⚠") else ())
                     self._rpath[iid] = e.pick.pick.path
+                    self._rcopy[iid] = e.dest if e.kept else ""
             if cs:
                 cn = self._rtree.insert(node, "end", text=f"To clarify  ({len(cs)} photos)", open=False,
                                         tags=("head", "unsure"))
@@ -410,6 +417,7 @@ class SpeciesListDialog(ctk.CTkToplevel):
                                                      ("already there: " if c.kept else "") + c.dest),
                                              tags=("kept",) if c.kept else ("unsure",))
                     self._rpath[iid] = s.pick.path
+                    self._rcopy[iid] = c.dest if c.kept else ""
         n_species = len(entries)
         new = sum(1 for e in entries if not e.kept) + sum(1 for c in clarify if not c.kept)
         stopped = res["done"] < res["bursts"]
@@ -436,12 +444,33 @@ class SpeciesListDialog(ctk.CTkToplevel):
 
     def _open_original(self, e) -> None:
         row = self._rtree.identify_row(e.y)
-        path = getattr(self, "_rpath", {}).get(row)
-        if path and os.path.exists(path):
+        path = sl.find_original(getattr(self, "_rpath", {}).get(row, ""))
+        if path:
             try:
                 os.startfile(path)                        # (Windows)
             except (OSError, AttributeError):
                 pass
+
+    def _row_menu(self, e) -> None:
+        """Right-click a species: open it, or show the original / the list's copy in its folder."""
+        row = self._rtree.identify_row(e.y)
+        original = getattr(self, "_rpath", {}).get(row)
+        if not original:
+            return
+        self._rtree.selection_set(row)
+        copy = getattr(self, "_rcopy", {}).get(row, "")
+        copy = os.path.join(self._dest.get().strip(), copy) if copy else ""
+
+        def missing():
+            self._status.configure(text="The original isn't there (is the drive plugged in?)")
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Open the original", command=lambda: self._open_original(e))
+        menu.add_command(label="Show original in folder",
+                         command=lambda: sl.show_in_folder(original) or missing())
+        if copy and os.path.exists(copy):
+            menu.add_command(label="Show the copy in the list",
+                             command=lambda: sl.show_in_folder(copy))
+        menu.tk_popup(e.x_root, e.y_root)
 
     # ── 4. review ────────────────────────────────────────────────────────────
 
@@ -491,20 +520,37 @@ class SpeciesListDialog(ctk.CTkToplevel):
 
     # ── 3. copy ──────────────────────────────────────────────────────────────
 
+    def _jpeg_changed(self) -> None:
+        """RAW as JPEG: remembered; the photos still to copy are named to match
+        (copies already in the list stay as they are)."""
+        self._settings["species_list_jpeg"] = self._jpeg.get()
+        save_app_settings(self._settings)
+        if (self._entries or self._clarify) and not self._busy:
+            sl.plan_copies(self._entries, self._clarify, self._dest.get().strip(), self._jpeg.get())
+            self._show_results(self._res, self._entries, self._clarify, show=False)
+
     def _copy(self) -> None:
         dest = self._dest.get().strip()
         todo = [e for e in self._entries if not e.kept] + [c for c in self._clarify if not c.kept]
-        size = sum(os.path.getsize(e.pick.pick.path) if isinstance(e, sl.Entry)
-                   else os.path.getsize(e.sighting.pick.path) for e in todo
-                   if os.path.exists(e.pick.pick.path if isinstance(e, sl.Entry) else e.sighting.pick.path))
-        if not mb.askyesno("Copy list", f"Copy {len(todo)} photos ({size / 1e9:.1f} GB) and write the "
-                           f"CSV lists into\n{dest}?\n\nYour originals are not changed.", parent=self):
+        size = n_jpeg = 0
+        for item in todo:
+            src = item.pick.pick.path if isinstance(item, sl.Entry) else item.sighting.pick.path
+            if not os.path.exists(src):
+                continue
+            if self._jpeg.get() and os.path.splitext(src)[1].lower() in sl.RAW_EXTS:
+                n_jpeg += 1
+                size += os.path.getsize(src) // 7          # (roughly: a 60 MB D850 NEF → a 7–9 MB JPEG)
+            else:
+                size += os.path.getsize(src)
+        made = f", {n_jpeg} of them RAW made into JPEGs" if n_jpeg else ""
+        if not mb.askyesno("Copy list", f"Copy {len(todo)} photos (about {size / 1e9:.1f} GB{made}) and "
+                           f"write the CSV lists into\n{dest}?\n\nYour originals are not changed.", parent=self):
             return
         self._start(self._copy_work, dest)
 
     def _copy_work(self, dest: str) -> None:
         try:
-            done = sl.copy_list(self._entries, self._clarify, dest, stop=self._stop,
+            done = sl.copy_list(self._entries, self._clarify, dest, stop=self._stop, jpeg=self._jpeg.get(),
                                 progress=lambda n, t, d: self._q.put(("progress", (n, t, d))))
             self._q.put(("copied", done))
         except Exception as e:
@@ -576,7 +622,7 @@ class SpeciesListDialog(ctk.CTkToplevel):
                         msg += f"\n\n{len(data['errors'])} problem(s):\n" + "\n".join(data["errors"][:8])
                     self._status.configure(text=msg.split("\n")[0])
                     mb.showinfo("Species list", msg, parent=self)
-                    sl.plan_copies(self._entries, self._clarify, self._dest.get().strip())
+                    sl.plan_copies(self._entries, self._clarify, self._dest.get().strip(), self._jpeg.get())
                     self._save_results()
                 elif kind == "error":
                     self._finish()

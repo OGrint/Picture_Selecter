@@ -102,6 +102,7 @@ All the gallery keys above, plus:
 | ← → | Previous / next photo |
 | ↑ ↓ | The burst's other frames |
 | V / double-click | Open the original |
+| O | Show the original in its folder (Explorer) |
 | Esc | Close |
 
 ## Buttons without keys

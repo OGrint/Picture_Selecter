@@ -52,6 +52,7 @@ Example:
 | `collect_parent`, `collect_dest` | `""` | Collect Best folders: the folder last searched and the collection folder |
 | `collect_identify` | `true` | Collect Best folders: identify the species of photos the app hasn't named |
 | `species_list_parent` | `""` | Species list from archive: the folder last read (the list is saved in its *Species list* folder) |
+| `species_list_jpeg` | `true` | Species list: RAW photos go into the list as JPEGs (made from the RAW's own full-size preview) |
 | `species_list_per_guess` | `"7"` | Species list: photos copied to *To clarify* per best guess per country (`"1"`, `"3"`, `"7"`, `"10"`, `"All"`) |
 | `species_list_sure` | `"80%"` | Species list: how probable an AI ID must be to count as certain |
 | `species_list_countries` | `{}` | Species list: the country you set per folder (`""` = not known) |

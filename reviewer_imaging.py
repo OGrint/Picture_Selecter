@@ -823,6 +823,51 @@ def load_preview(path: str, min_side: int, box: Optional[tuple[int, int]] = None
     return auto_orient(img)
 
 
+RAW_JPEG_QUALITY = 92
+RAW_JPEG_MIN_SIDE = 2500      # an embedded preview smaller than this: develop the RAW instead
+
+
+def raw_to_jpeg(src: str, target: str, when: Optional[float] = None, description: str = "",
+                comment: str = "") -> None:
+    """
+    A JPEG of a RAW file for a list (the species list): the camera's own
+    full-size preview embedded in the RAW (its colours, about a second for a
+    D850 NEF), or the RAW developed when that preview is missing or small.
+    Carries the capture time, a description and a comment (Windows shows it
+    in Properties → Details → Comments). Written whole: to
+    target + '.part', then renamed. Raises if it can't be made.
+    """
+    import datetime
+    img = load_preview(src, 100000)                 # (full size: no reduced decode)
+    img.load()
+    if max(img.size) < RAW_JPEG_MIN_SIDE and _RAWPY_AVAILABLE and Path(src).suffix.lower() in RAW_EXTS:
+        with rawpy.imread(src) as raw:
+            img = Image.fromarray(raw.postprocess(use_camera_wb=True))
+    exif = Image.Exif()
+    exif[0x0112] = 1                                # (already the right way up)
+    if when:
+        stamp = datetime.datetime.fromtimestamp(when).strftime("%Y:%m:%d %H:%M:%S")
+        exif[0x0132] = stamp
+        exif.get_ifd(0x8769)[36867] = stamp         # DateTimeOriginal
+    if description:
+        exif[0x010E] = description.encode("ascii", "replace").decode("ascii")
+        exif[0x9C9F] = description.encode("utf-16-le") + b"\0\0"      # XPSubject
+    if comment:
+        exif[0x9C9C] = comment.encode("utf-16-le") + b"\0\0"          # XPComment (any characters)
+        exif.get_ifd(0x8769)[0x9286] = b"UNICODE\0" + comment.encode("utf-16-le")   # UserComment
+    os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+    tmp = target + ".part"
+    try:
+        img.convert("RGB").save(tmp, "JPEG", quality=RAW_JPEG_QUALITY, optimize=True, exif=exif.tobytes())
+        os.replace(tmp, target)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def load_small_thumb(path: str, max_side: int = THUMB_MAX) -> Image.Image:
     """
     Small RGB thumbnail for grids and the filmstrip. JPEG data (including

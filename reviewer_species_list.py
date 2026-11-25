@@ -56,7 +56,7 @@ from typing import Callable, Optional
 
 from reviewer_collect import (FINAL_DIRS, MONTHS, SpeciesLookup, _is_generic, _key, _times,
                               _within, clean, is_best_dir, norm_name)
-from reviewer_imaging import BITMAP_EXTS, RAW_EXTS
+from reviewer_imaging import BITMAP_EXTS, RAW_EXTS, raw_to_jpeg
 from reviewer_import import _copy_verified
 from reviewer_regions import by_iso, by_name, guess_country
 
@@ -891,16 +891,23 @@ def _short(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n].rstrip(" -_.")
 
 
-def name_entry(e: Entry) -> str:
-    ext = os.path.splitext(e.pick.pick.path)[1]
+def out_ext(path: str, jpeg: bool) -> str:
+    """The extension of a photo's copy in the list (.jpg for a RAW, with jpeg)."""
+    ext = os.path.splitext(path)[1]
+    return ".jpg" if jpeg and ext.lower() in RAW_EXTS else ext
+
+
+def name_entry(e: Entry, jpeg: bool = False) -> str:
+    ext = out_ext(e.pick.pick.path, jpeg)
     label = f"{e.species} ({e.scientific})" if e.scientific and e.scientific != e.species else e.species
     return os.path.join(_short(country_name(e.iso), 60), GROUP_FOLDERS.get(e.group, "Other animals"),
                         f"{_short(label, 120)}_{e.pick.date}{ext}")
 
 
-def name_clarify(c: Clarify) -> str:
+def name_clarify(c: Clarify, jpeg: bool = False) -> str:
     s = c.sighting
-    stem, ext = os.path.splitext(os.path.basename(s.pick.path))
+    stem = os.path.splitext(os.path.basename(s.pick.path))[0]
+    ext = out_ext(s.pick.path, jpeg)
     guesses = ", ".join(f"{n} {p:.0%}" for n, _sc, p in (c.guesses or s.guesses)[:3])
     sci = (c.guesses or s.guesses)[0][1] if (c.guesses or s.guesses) else ""
     folder = f"{c.name} ({sci}) - possible" if sci and sci != c.name else f"{c.name} - possible"
@@ -944,9 +951,13 @@ def _tidy_parts(dest: str) -> None:
                     pass
 
 
-def plan_copies(entries: list[Entry], clarify: list[Clarify], dest: str) -> None:
-    """Where each file goes. A species already in the list keeps its photo."""
+def plan_copies(entries: list[Entry], clarify: list[Clarify], dest: str,
+                jpeg: Optional[bool] = None) -> None:
+    """Where each file goes. A species already in the list keeps its photo.
+    jpeg: RAW photos become JPEGs in the list (None: as the list was made)."""
     done = load_list(dest)
+    if jpeg is None:
+        jpeg = bool(done.get("jpeg", False))
     have = dict(done.get("species", {}))
     try:                                    # (a list made before species listed twice were
         import reviewer_species             #  merged may hold the other spelling)
@@ -962,7 +973,7 @@ def plan_copies(entries: list[Entry], clarify: list[Clarify], dest: str) -> None
         if rel and os.path.exists(os.path.join(dest, rel)):
             e.dest, e.kept = rel, True
         else:
-            e.dest = name_entry(e)
+            e.dest = name_entry(e, jpeg)
             # copied but not recorded (a copy that stopped part-way: the record is
             # saved every 20 files): the copy of this species already there is kept
             if not os.path.exists(os.path.join(dest, e.dest)):
@@ -975,7 +986,7 @@ def plan_copies(entries: list[Entry], clarify: list[Clarify], dest: str) -> None
         if rel and os.path.exists(os.path.join(dest, rel)):
             c.dest, c.kept = rel, True
         else:
-            c.dest = name_clarify(c)
+            c.dest = name_clarify(c, jpeg)
 
 
 def _write_csv(path: str, header: list[str], rows: list[list]) -> None:
@@ -990,7 +1001,7 @@ def _write_csv(path: str, header: list[str], rows: list[list]) -> None:
 
 SPECIES_HEADER = ["Country", "Type", "Common name", "Scientific name", "Name check", "Sightings",
                   "Photos", "First seen", "Last seen", "Years", "Identified by", "Photo kept", "Original",
-                  "Your note", "Your examples"]
+                  "Original folder", "Your note", "Your examples"]
 
 
 def _years(sightings: list[Sighting]) -> list[str]:
@@ -1058,7 +1069,8 @@ def write_lists(entries: list[Entry], clarify: list[Clarify], dest: str, book: b
     ordered = sorted(entries, key=lambda e: _type_order(e) + (country_name(e.iso),))
     rows = [[country_name(e.iso), GROUP_FOLDERS.get(e.group, "Other animals"), e.species, e.scientific,
              e.name_note, len(e.sightings), e.frames, e.first, e.last, ", ".join(_years(e.sightings)),
-             e.how, e.dest, e.pick.pick.path, e.note, e.learned] for e in ordered]
+             e.how, e.dest, e.pick.pick.path, os.path.dirname(e.pick.pick.path), e.note, e.learned]
+            for e in ordered]
     written = [os.path.join(dest, "All species.csv")]
     _write_csv(written[0], SPECIES_HEADER, rows)
     by_country = defaultdict(list)
@@ -1075,10 +1087,11 @@ def write_lists(entries: list[Entry], clarify: list[Clarify], dest: str, book: b
         g = list(c.guesses or s.guesses) + [("", "", 0.0)] * 3
         crow.append([country_name(s.iso), s.date, g[0][0], g[0][1], f"{g[0][2]:.0%}",
                      g[1][0], f"{g[1][2]:.0%}" if g[1][0] else "", g[2][0], f"{g[2][2]:.0%}" if g[2][0] else "",
-                     len(s.photos), c.dest, s.pick.path, s.learned])
+                     len(s.photos), c.dest, s.pick.path, os.path.dirname(s.pick.path), s.learned])
     p = os.path.join(dest, "To clarify.csv")
     _write_csv(p, ["Country", "Date", "Best guess", "Scientific name", "Probability", "2nd guess", "p",
-                   "3rd guess", "p", "Photos in burst", "Copied to", "Original", "Your examples"], crow)
+                   "3rd guess", "p", "Photos in burst", "Copied to", "Original", "Original folder",
+                   "Your examples"], crow)
     # (names are the country's own where known, as in the species list)
     written.append(p)
     out = write_workbook(written, dest) if book else None
@@ -1086,6 +1099,37 @@ def write_lists(entries: list[Entry], clarify: list[Clarify], dest: str, book: b
 
 
 WORKBOOK = "Species list.xlsx"
+LINK_COLUMNS = {"Original", "Original folder", "Photo kept", "Copied to"}
+
+
+def find_original(path: str) -> Optional[str]:
+    """The photo, or the same path on another drive letter (a USB drive plugged
+    back in as E: instead of D:), or None."""
+    if not path:
+        return None
+    if os.path.exists(path):
+        return path
+    import string
+    drive, tail = os.path.splitdrive(path)
+    if len(drive) == 2 and drive[1] == ":":
+        for letter in string.ascii_uppercase:
+            p = f"{letter}:{tail}"
+            if letter != drive[0].upper() and os.path.exists(p):
+                return p
+    return None
+
+
+def show_in_folder(path: str) -> bool:
+    """Open the photo's folder in Explorer with the photo selected (Windows)."""
+    found = find_original(path)
+    if not found:
+        return False
+    import subprocess
+    try:
+        subprocess.Popen(["explorer", "/select,", os.path.normpath(found)])
+        return True
+    except OSError:
+        return False
 
 
 def write_workbook(csvs: list[str], dest: str) -> Optional[str]:
@@ -1120,6 +1164,16 @@ def write_workbook(csvs: list[str], dest: str) -> Optional[str]:
         for r in rows:
             ws.append([int(v) if v.isdigit() and len(v) < 10 else v for v in r])
         if rows:
+            # links: the original and its folder; the list's own copy (relative to
+            # the workbook, so it still works if the list folder moves)
+            for i, h in enumerate(rows[0], 1):
+                if h not in LINK_COLUMNS:
+                    continue
+                for row in ws.iter_rows(min_row=2, min_col=i, max_col=i):
+                    cell = row[0]
+                    if isinstance(cell.value, str) and cell.value:
+                        cell.hyperlink = cell.value
+                        cell.style = "Hyperlink"
             for cell in ws[1]:
                 cell.font = Font(bold=True, color="FFFFFF")
                 cell.fill = PatternFill("solid", fgColor="2D7A4F")
@@ -1144,18 +1198,22 @@ def write_workbook(csvs: list[str], dest: str) -> Optional[str]:
 
 def copy_list(entries: list[Entry], clarify: list[Clarify], dest: str,
               progress: Optional[Callable[[int, int, str], None]] = None,
-              stop: Optional[threading.Event] = None) -> dict:
-    """Copy the chosen photos (verified) and write the CSV lists."""
-    plan_copies(entries, clarify, dest)
+              stop: Optional[threading.Event] = None, jpeg: Optional[bool] = None) -> dict:
+    """Copy the chosen photos (verified; RAW ones as JPEGs with jpeg) and write
+    the CSV lists."""
+    plan_copies(entries, clarify, dest, jpeg)
     data = load_list(dest)
+    if jpeg is not None:
+        data["jpeg"] = jpeg                 # (Review and later runs make the same)
     have, seen = data.setdefault("species", {}), data.setdefault("clarify", {})
     for e in entries:                       # (copies found in place, not yet recorded)
         if e.kept and e.dest:
             have.setdefault(entry_key(e), e.dest)
-    todo = [(e.pick.pick.path, e.dest, "species", f"{e.iso or ''}|{e.scientific or e.species.lower()}")
+    todo = [(e.pick.pick.path, e.dest, "species", f"{e.iso or ''}|{e.scientific or e.species.lower()}",
+             e.pick.pick.ts, f"{e.species} ({e.scientific})" if e.scientific else e.species)
             for e in entries if not e.kept]
-    todo += [(c.sighting.pick.path, c.dest, "clarify", _key(c.sighting.pick.path))
-             for c in clarify if not c.kept]
+    todo += [(c.sighting.pick.path, c.dest, "clarify", _key(c.sighting.pick.path),
+              c.sighting.pick.ts, f"To clarify: {c.name}?") for c in clarify if not c.kept]
     out = {"copied": 0, "bytes": 0, "errors": [], "kept": sum(e.kept for e in entries)}
     os.makedirs(dest, exist_ok=True)
     _tidy_parts(dest)
@@ -1164,16 +1222,15 @@ def copy_list(entries: list[Entry], clarify: list[Clarify], dest: str,
         tmp = os.path.join(dest, LIST_FILE + ".tmp")
         Path(tmp).write_text(json.dumps(data, indent=1), encoding="utf-8")
         os.replace(tmp, os.path.join(dest, LIST_FILE))
-    for n, (src, rel, kind, key) in enumerate(todo, 1):
+    for n, (src, rel, kind, key, when, what) in enumerate(todo, 1):
         if stop is not None and stop.is_set():
             break
         target = os.path.join(dest, rel)
         try:
-            if not (os.path.exists(target) and os.path.getsize(target) == os.path.getsize(src)):
-                _copy_verified(src, [target], True)
+            put_in(src, target, when, what)
             (have if kind == "species" else seen)[key] = rel
             out["copied"] += 1
-            out["bytes"] += os.path.getsize(src)
+            out["bytes"] += os.path.getsize(target)
         except Exception as e:
             out["errors"].append(f"{src}: {e}")
         if n % 20 == 0:
@@ -1183,6 +1240,18 @@ def copy_list(entries: list[Entry], clarify: list[Clarify], dest: str,
     save()
     out["lists"] = write_lists(entries, clarify, dest)
     return out
+
+
+def put_in(src: str, target: str, when: Optional[float] = None, what: str = "") -> None:
+    """A photo into the list: a JPEG made from a RAW (when the target is .jpg and
+    the source a RAW), else a verified copy. Already there whole: left as it is."""
+    convert = (os.path.splitext(target)[1].lower() == ".jpg"
+               and os.path.splitext(src)[1].lower() in RAW_EXTS)
+    if convert:
+        if not os.path.exists(target):          # (made whole or not at all: .part, then renamed)
+            raw_to_jpeg(src, target, when or None, what, f"Original: {src}")
+    elif not (os.path.exists(target) and os.path.getsize(target) == os.path.getsize(src)):
+        _copy_verified(src, [target], True)
 
 
 # ── review: your corrections ─────────────────────────────────────────────────
@@ -1217,6 +1286,7 @@ class ListEditor:
         self.data = load_list(dest)
         for k in ("species", "clarify", "decisions"):
             self.data.setdefault(k, {})
+        self.jpeg = bool(self.data.get("jpeg", False))      # (RAW photos as JPEGs, as the list was made)
         self._undo: list = []
         self._ops: Optional[list] = None
         self._held = 0
@@ -1286,7 +1356,7 @@ class ListEditor:
         where = country_name(iso)
         if target is None:
             e = Entry(iso, name, sci, group, list(ss), pick)
-            e.dest = name_entry(e)
+            e.dest = self._name(e, old)
             self._place(e, old)
             self.entries.append(e)
             self.entries.sort(key=_entry_order)
@@ -1296,7 +1366,7 @@ class ListEditor:
             if use_this:
                 self._remove(self.on_disk(target))
                 target.pick = pick
-                target.dest = name_entry(target)
+                target.dest = self._name(target, old)
                 self._place(target, old)
                 msg = f"{target.species}: already in {where}; now this photo is the one kept"
             else:
@@ -1342,7 +1412,7 @@ class ListEditor:
             self.all[:] = [s for s in self.all if s is not gone]
         if e.sightings:                          # seen elsewhere: the next best photo
             e.pick = max(e.sightings, key=lambda s: (s.quality, -s.pick.ts))
-            e.dest = name_entry(e)
+            e.dest = name_entry(e, self.jpeg)
             self._copy_in(e)
             n = len(e.sightings)
             return (f"Removed this photo. {name} was seen {n} more time{'s' if n > 1 else ''} in {where}: "
@@ -1369,7 +1439,7 @@ class ListEditor:
         for s in found[:CLARIFY_PER_GUESS]:
             gs = [(_name(n, sc, s.iso, "AI", self.name_of)[0], sc, p) for n, sc, p in s.guesses]
             c = Clarify(s, guesses=gs)
-            c.dest = name_clarify(c)
+            c.dest = name_clarify(c, self.jpeg)
             self.clarify.append(c)
         return min(len(found), CLARIFY_PER_GUESS)
 
@@ -1436,6 +1506,12 @@ class ListEditor:
             del self._undo[:-UNDO_STEPS]
         self._ops = None
 
+    def _name(self, e: Entry, old: Optional[str]) -> str:
+        """Where a species' photo goes; a copy being moved keeps its own type
+        (a RAW copied before JPEGs were chosen stays a RAW)."""
+        rel = name_entry(e, self.jpeg)
+        return os.path.splitext(rel)[0] + os.path.splitext(old)[1] if old else rel
+
     def _forget(self, item) -> None:
         if isinstance(item, Entry):
             self.entries.remove(item)
@@ -1472,7 +1548,8 @@ class ListEditor:
         try:
             if os.path.exists(target):
                 self._remove(target)
-            _copy_verified(e.pick.pick.path, [target], True)
+            put_in(e.pick.pick.path, target, e.pick.pick.ts,
+                   f"{e.species} ({e.scientific})" if e.scientific else e.species)
             if self._ops is not None:
                 self._ops.append(("new", target))
             e.kept = True
